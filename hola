@@ -1,1 +1,2375 @@
-Hola
+<?php
+
+if (!defined('BASEPATH')) {
+    exit('No direct script access allowed');
+}
+
+/*
+ *
+ * @package    Flexio
+ * @subpackage Controller
+ * @category   Facturas de compras
+ * @author     Pensanomica Team
+ * @link       http://www.pensanomica.com
+ * @copyright  02/19/2016
+ */
+
+use Flexio\Modulo\CentrosContables\Getter\CentroTablaCatalogoGetter;
+use Flexio\Modulo\CentrosContables\Models\CentrosContables;
+use Flexio\Modulo\ConfiguracionContabilidad\Models\CuentaPorPagar;
+use Flexio\Modulo\ContratosRecurrentes\Models\ContratoRecurrente;
+use Flexio\Modulo\Empresa\Models\Empresa;
+use Flexio\Modulo\PolizasSeguro\Models\PolizasSeguro;
+use Flexio\Modulo\FacturasCompras\FormRequest\GuardarNotaCreditoAplicado;
+use Flexio\Modulo\FacturasCompras\Getters\FacturaArancelDefaultGetter;
+use Flexio\Modulo\FacturasCompras\Getters\FacturaDuplicatedToOtherCampanyGetter;
+use Flexio\Modulo\FacturasCompras\Getters\FacturaVentaDuplicatedToOtherCampanyGetter;
+use Flexio\Modulo\FacturasCompras\Models\FacturaCompraItems;
+use Flexio\Modulo\FacturasCompras\Validation\FacturaEstaRecibidaValidation;
+use Flexio\Modulo\FacturasCompras\Validation\FacturaTieneArancelImportacionValidation;
+use Flexio\Modulo\OrdenesCompra\Models\OrdenesCompra;
+use Flexio\Modulo\Proveedores\Models\Proveedores;
+use Illuminate\Database\Capsule\Manager as Capsule;
+use Flexio\Modulo\FacturasCompras\Models\FacturaCompra as FaccomModel;
+use Flexio\Modulo\OrdenesCompra\Repository\OrdenesCompraRepository as ordenesCompraRep;
+use Flexio\Modulo\PolizasSeguro\Repository\PolizasSeguroRepository as polizasSeguroRep;
+use Flexio\Modulo\Contabilidad\Repository\ImpuestosRepository as impuestosRep;
+use Flexio\Modulo\FacturasCompras\Repository\FacturaCompraRepository;
+use Flexio\Modulo\SubContratos\Repository\SubContratoRepository as subcontratosRep;
+use Flexio\Modulo\Proveedores\Repository\ProveedoresRepository as proveedoresRep;
+use Flexio\Modulo\FacturasVentas\Repository\FacturaVentaCatalogoRepository;
+use Flexio\Modulo\Usuarios\Repository\UsuariosRepository;
+use Flexio\Modulo\CentrosContables\Repository\CentrosContablesRepository;
+use Flexio\Modulo\Bodegas\Repository\BodegasRepository;
+use Flexio\Modulo\Inventarios\Repository\CategoriasRepository as ItemsCategoriasRepository;
+use Flexio\Modulo\Contabilidad\Repository\CuentasRepository;
+use Flexio\Modulo\FacturasCompras\Repository\FacturaCompraCatalogoRepository;
+use Flexio\Modulo\FacturasCompras\Models\FacturaCompra;
+use Carbon\Carbon;
+use Flexio\Modulo\Busqueda\Repository\BusquedaRepository;
+use Flexio\Modulo\Core\Models\Descarga;
+use Flexio\Modulo\Cajas\Repository\CajasRepository as CajasRepository;
+use Flexio\Modulo\ProveedoresCaja\Repository\ProveedoresCajasRepository;
+use Flexio\Modulo\Catalogos\Repository\CatalogoRepository;
+use Flexio\Modulo\Bancos\Repository\BancosRepository;
+use Flexio\Modulo\Reembolsos\Models\Reembolso;
+use Flexio\Library\Util\FlexioSession;
+use Flexio\Library\Util\AuthUser;
+use Flexio\Modulo\FacturasCompras\Services\FacturaCompraEmpezable;
+use League\Csv\Writer;
+use Flexio\Modulo\FacturasCompras\Controllers\FacturasGastosAdicionales;
+
+use Flexio\Modulo\Core\Repositorios\FavoritoRepository;
+use Flexio\Modulo\Core\FormRequest\ConsultaGuardar;
+
+class Facturas_compras extends CRM_Controller
+{
+    use FacturasGastosAdicionales;
+    protected $FacturaCompraRepository;
+    private $empresa_id;
+    private $id_usuario;
+    private $empresaObj;
+    private $ordenesCompraRep;
+    private $polizasSeguroRep;
+    private $impuestosRep;
+    private $facturasCompraRep;
+    private $subcontratosRep;
+    private $proveedoresRep;
+    protected $BusquedaRepository;
+    protected $descargaModel;
+    protected $CajasRepository;
+    protected $ProveedoresCajasRepository;
+    protected $CatalogoRepository;
+    protected $BancosRepository;
+
+    private $operaciones_nombres = [
+        '&Oacute;rdenes de compras' => 'Ordenes_orm',
+        'Subcontrato' => 'Flexio\\Modulo\\SubContratos\\Models\\SubContrato',
+    ];
+
+    protected $FacturaVentaCatalogoRepository;
+    protected $UsuariosRepository;
+    protected $CentrosContablesRepository;
+    protected $BodegasRepository;
+    protected $ItemsCategoriasRepository;
+    protected $CuentasRepository;
+    protected $FacturaCompraCatalogoRepository;
+
+    //utils
+    protected $FlexioSession;
+
+    public function __construct()
+    {
+        parent::__construct();
+
+        $this->load->model('proveedores/Proveedores_orm');
+
+        $this->load->model('centros/Centros_orm');
+
+        $this->load->model('pagos/Pagos_orm');
+
+        $this->load->model('inventarios/Items_categorias_orm');
+        $this->load->model('inventarios/Categorias_orm');
+
+        $this->load->model('usuarios/Usuario_orm');
+
+        $this->load->model('contabilidad/Impuestos_orm');
+
+        $this->load->model('ordenes/Ordenes_orm');
+
+        $this->load->model('facturas_compras/Facturas_compras_orm');
+        $this->load->model('pagos/Pago_metodos_pago_orm');
+        $this->load->model('ordenes/Ordenes_orm');
+        $this->load->model('facturas/Factura_catalogo_orm'); //uso el mismo catalogo de la seccion de facturas de ventas
+
+        $this->load->module(array('salidas/Salidas', 'documentos'));
+        Carbon::setLocale('es');
+        setlocale(LC_TIME, 'Spanish');
+        //Cargar Clase Util de Base de Datos
+        $this->load->dbutil();
+
+        $uuid_empresa = $this->session->userdata('uuid_empresa');
+        $uuid_usuario = $this->session->userdata('huuid_usuario');
+
+        $empresaObj = new Buscar(new Empresa_orm(), 'uuid_empresa');
+        $usuario = Usuario_orm::findByUuid($uuid_usuario);
+
+        $this->empresaObj = $empresaObj->findByUuid($uuid_empresa);
+
+        $this->empresa_id = $this->empresaObj->id;
+        $this->id_usuario = $usuario->id;
+
+        $this->ordenesCompraRep = new ordenesCompraRep();
+        $this->polizasSeguroRep = new polizasSeguroRep();
+        $this->impuestosRep = new impuestosRep();
+        $this->facturasCompraRep = new FacturaCompraRepository();
+        $this->subcontratosRep = new subcontratosRep();
+        $this->proveedoresRep = new proveedoresRep();
+        $this->BusquedaRepository = new BusquedaRepository;
+        $this->descargaModel = new Descarga();
+
+
+        $this->FacturaCompraRepository = new FacturaCompraRepository();
+        $this->FacturaVentaCatalogoRepository = new FacturaVentaCatalogoRepository();
+        $this->UsuariosRepository = new UsuariosRepository();
+        $this->CentrosContablesRepository = new CentrosContablesRepository();
+        $this->BodegasRepository = new BodegasRepository();
+        $this->ItemsCategoriasRepository = new ItemsCategoriasRepository();
+        $this->CuentasRepository = new CuentasRepository();
+        $this->FacturaCompraCatalogoRepository = new FacturaCompraCatalogoRepository();
+        $this->CajasRepository = new CajasRepository();
+        $this->ProveedoresCajasRepository = new ProveedoresCajasRepository();
+        $this->CatalogoRepository = new CatalogoRepository();
+        $this->BancosRepository = new BancosRepository();
+        //utils
+        $this->FlexioSession = new FlexioSession();
+    }
+
+    public function ajax_get_empezable()
+    {
+        if (!$this->input->is_ajax_request()) {
+            return false;
+        }
+
+        $post = array_filter($this->input->post());
+        $response = [];
+
+        if (isset($post['type'])) {
+            $empezable = new FacturaCompraEmpezable();
+            $response = $empezable->getResponse($post);
+        }
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(Collect($response))->_display();
+        exit;
+    }
+
+    public function index()
+    {
+        redirect('facturas_compras/listar');
+    }
+
+    public function listar()
+    {
+
+        $data = array();
+        $toast = new Flexio\Library\Toast();
+        //Verificar permisos de acceso -> sin no los tiene retorna al landing page.
+        $toast->runVerifyPermission($this->auth->has_permission('acceso'));
+
+        $this->_Css();
+        $this->_js();
+        $this->assets->agregar_js(array(
+            'public/assets/js/plugins/jquery/jquery.chosen-expander.min.js',
+            'public/assets/js/modules/facturas_compras/listar.js',
+            'public/assets/js/default/toast.controller.js',
+            'public/assets/js/default/parametros_busqueda.js',
+            'public/assets/js/default/jquery.fileDownload.js',
+            'public/resources/compile/modulos/facturas_compras/busqueda_avanzada.js',
+        ));
+
+        $breadcrumb = array(
+            'titulo' => '<i class="fa fa-shopping-cart"></i> Facturas de compras',
+            'ruta' => array(
+                0 => array(
+                    'nombre' => 'Compras',
+                    'activo' => false,
+                ),
+                1 => array(
+                    'nombre' => '<b>Facturas de compras</b>',
+                    'activo' => true,
+                ),
+            ),
+            "menu" => array()
+        );
+
+        //Agregar favorito
+        $favorito = (new FavoritoRepository)->get();
+        $favorito_id = !empty($favorito->toArray()) ? '#removeFavorito' : '#addFavorito';
+        $favorito_texto = !empty($favorito->toArray()) ? '<i class="mdi mdi-trash-can-outline m-r-xs"></i><span>Eliminar de favoritos</span>' : '<i class="mdi mdi-star m-r-xs"></i><span>Agregar a favoritos</span>';
+        $breadcrumb["menu"]["opciones"][$favorito_id] = $favorito_texto;
+
+        //Verificar si tiene permiso a la seccion de Crear
+        if ($this->auth->has_permission('acceso', 'facturas_compras/crear')) {
+            $breadcrumb["menu"]["nombre"] = "Crear";
+            $breadcrumb["menu"]["url"] = "facturas_compras/crear";
+        }
+        if ($this->getPoliticasValidate()) {
+            $breadcrumb['menu']['opciones']['#change-state-multiple-btn'] = "<i class='fa fa-compass'></i> Cambiar de estado";
+        }
+        //todavia este permiso no existe, se debe crear
+        //if ($this->auth->has_permission('listar__exportarOrdenes', 'facturas_compras/listar')) {
+        $breadcrumb['menu']['opciones']['#exportarListaFacturasCompras'] = "<i class='fa fa-file-text-o'></i> Exportar";
+        //}
+
+        //$breadcrumb['menu']['opciones']['#refacturar'] = "<li class='divider'><li><i class='fa fa-file-text-o'></i> Refacturar";
+        $breadcrumb['menu']['opciones']['#aplicar_pagos'] = "<i class='fa fa-shopping-cart'></i> Aplicar pagos";
+
+        /*
+        if($this->auth->has_permission('listar__descargar', 'facturas_compras/listar')){
+            $breadcrumb["menu"]["opciones"]["#descargarBtnCsv"] = "<i class='fa fa-download'></i> Descargar";
+        }
+        */
+
+        $favorito = (new FavoritoRepository)->get();
+        $favorito_id = !empty($favorito->toArray()) ? '#removeFavorito' : '#addFavorito';
+        $favorito_texto = !empty($favorito->toArray()) ? 'Eliminar de favoritos' : 'Agregar a favoritos';
+        $breadcrumb["menu"]["opciones"][$favorito_id] = $favorito_texto;
+
+        $this->assets->agregar_var_js(array(
+            'flexio_mensaje' => Flexio\Library\Toast::getStoreFlashdata(),
+            'prex' => 'factura_compra'
+        ));
+
+        $clause2 = ['empresa_id' => $this->empresa_id, 'ordenables' => true, 'transaccionales' => true, 'conItems' => true, 'estado != por_aprobar'];
+        $clause = ['empresa_id' => $this->empresa_id, 'facturables' => true, 'transaccionales' => true, 'conItems' => true];
+        $vendedores = $this->UsuariosRepository->get($clause)->map(function ($usuario) {
+            return ['id' => $usuario->id, 'nombre' => $usuario->nombre_completo];
+        });
+
+        /// filtro de categoria
+        $categorias_items = AuthUser::usuarioCategoriaItems();
+
+        $columns = ['id', 'nombre'];
+        $categorias = $this->ItemsCategoriasRepository->getAll(['empresa_id' => $this->empresa_id], $columns);
+
+        $categoria = $categorias->filter(function ($categoria) use ($categorias_items) {
+            if (!in_array('todos', $categorias_items)) {
+                return in_array($categoria->id, $categorias_items);
+            }
+
+            return $categoria;
+        });
+        $termino_pago = array();
+        $centros = array();
+        $estado = array();
+
+        $dataTerminoPago = $this->FacturaVentaCatalogoRepository->getTerminoPago();
+        $dataCentros = $this->CentrosContablesRepository->getCollectionCentrosContables($this->CentrosContablesRepository->get($clause));
+        $dataEstados = Factura_catalogo_orm::estadosFacturasCompras()->get();
+
+        foreach ($dataTerminoPago as $key => $value) {
+            $termino_pago[$key]['id'] = $value->etiqueta;
+            $termino_pago[$key]['nombre'] = $value->valor;
+        }
+        foreach ($dataCentros as $key => $value) {
+            $centros[$key]['id'] = $value['centro_contable_id'];
+            $centros[$key]['nombre'] = $value['nombre'];
+        }
+        foreach ($dataEstados as $key => $value) {
+            $estado[$key]['id'] = $value->id;
+            $estado[$key]['nombre'] = $value->valor;
+        }
+
+        $data['proveedores'] = collect([]);
+        $data['tipos'] = Factura_catalogo_orm::tiposFacturasCompras()->get();
+
+        $data['menu_busqueda'] = $this->BusquedaRepository->get([
+            'busquedable_type' => "Facturas de Compras"
+        ]);
+
+        $this->assets->agregar_var_js(array(
+            'categorias' => $categoria,
+            'catalogo_termino_pago' => json_encode($termino_pago),
+            'centros' => json_encode($centros),
+            'vendedores' => $vendedores,
+            'estado' => json_encode($estado)
+        ));
+
+        $this->template->agregar_titulo_header('Listado de facturas de compras');
+        $this->template->agregar_breadcrumb($breadcrumb);
+        $this->template->agregar_contenido($data);
+        $this->template->visualizar($breadcrumb);
+    }
+
+    public function ajax_exportar()
+    {
+        try {
+            $clause = array_merge(
+                array_filter($this->input->post()),
+                ['empresa' => $this->empresa_id]
+            );
+
+            $rows = Capsule::table('faccom_facturas as factura')
+                ->join('pro_proveedores as proveedor', 'proveedor.id', '=', 'factura.proveedor_id')
+                ->leftJoin('cen_centros as centro', 'centro.id', '=', 'factura.centro_contable_id')
+                ->leftJoin('fac_factura_catalogo as catalogo', 'catalogo.id', '=', 'factura.estado_id')
+                ->leftJoin('usuarios as usuario', 'usuario.id', '=', 'factura.created_by')
+                ->leftJoin('faccom_facturas_items as factura_item', 'factura_item.factura_id', '=', 'factura.id')
+                ->leftJoin('doc_documentos as documento', function (\Illuminate\Database\Query\JoinClause $join) {
+                    $join->on('documento.documentable_id', '=', 'factura.id');
+                    $join->where('documento.documentable_type', '=', FacturaCompra::class);
+                })
+                ->leftJoin('pag_pagos_pagables as pago_pagable', function (\Illuminate\Database\Query\JoinClause $join) {
+                    $join->on('pago_pagable.pagable_id', '=', 'factura.id');
+                    $join->where('pago_pagable.pagable_type', '=', FacturaCompra::class);
+                })
+                ->leftJoin('pag_pagos as pago', function (\Illuminate\Database\Query\JoinClause $join) {
+                    $join->on('pago.id', '=', 'pago_pagable.pago_id');
+                    $join->whereNotIn('pago.estado', ['anulado', 'oculto']);
+                })
+                ->leftJoin('ord_ordenes as orden1', function (\Illuminate\Database\Query\JoinClause $join) {
+                    $join->on('orden1.id', '=', 'factura.operacion_id');
+                    $join->where('factura.operacion_type', '=', 'Ordenes_orm');
+                })
+                ->leftJoin('faccom_facturables as facturable', function (\Illuminate\Database\Query\JoinClause $join) {
+                    $join->on('facturable.factura_id', '=', 'factura.id');
+                    $join->where('facturable.facturable_type', '=', OrdenesCompra::class);
+                })
+                ->leftJoin('ord_ordenes as orden2', function (\Illuminate\Database\Query\JoinClause $join) {
+                    $join->on('orden2.id', '=', 'facturable.facturable_id');
+                    $join->where('facturable.facturable_type', '=', OrdenesCompra::class);
+                })
+                ->select([
+                    'factura.factura_proveedor',
+                    'factura.fecha_desde',
+                    'proveedor.nombre as proveedor',
+                    'orden1.numero as referencia',
+                    Capsule::raw("FORMAT(factura.total,2) as monto"),
+                    Capsule::raw("FORMAT(fac_compras_monto(
+                    factura.proveedor_id,
+                    factura.id,
+                    factura.empresa_id,
+                    factura.total,
+                    now()
+                  ),2) as saldo"),
+                    'centro.nombre as centro',
+                    Capsule::raw("count(Distinct documento.id) as documentos"),
+                    Capsule::raw("concat(usuario.nombre, ' ', usuario.apellido) as creado_por"),
+                    Capsule::raw('count(Distinct pago.id) as cantidad_pagos'),
+                    'catalogo.valor as estado'
+                ])
+                ->where(function (\Illuminate\Database\Query\Builder $query) use ($clause) {
+                    if (!empty($clause['empresa']))
+                        $query->where('factura.empresa_id', $clause['empresa']);
+                    if (!empty($clause['factura_proveedor']))
+                        $query->where('factura.factura_proveedor', 'like', '%' . $clause['factura_proveedor'] . '%');
+                    if (!empty($clause['proveedor']) && $clause['proveedor'] != "null")
+                        $query->where('factura.proveedor_id', $clause['proveedor']);
+                    if (!empty($clause['desde']))
+                        $query->whereDate('factura.fecha_desde', '>=', Carbon::createFromFormat('d-m-Y', $clause['desde'])->startOfDay());
+                    if (!empty($clause['hasta']))
+                        $query->whereDate('factura.fecha_desde', '<=', Carbon::createFromFormat('d-m-Y', $clause['hasta'])->endOfDay());
+                    if (!empty($clause['creacion_min']))
+                        $query->whereDate('factura.created_at', '>=', Carbon::createFromFormat('d-m-Y', $clause['creacion_min'])->startOfDay());
+                    if (!empty($clause['creacion_max']))
+                        $query->whereDate('factura.created_at', '<=', Carbon::createFromFormat('d-m-Y', $clause['creacion_max'])->endOfDay());
+                    if (!empty($clause['categoria_item']))
+                        $query->whereIn('factura_item.categoria_id', $clause['categoria_item']);
+                    if (!empty($clause['termino_pago']))
+                        $query->whereIn('factura.termino_pago', $clause['termino_pago']);
+                    if (!empty($clause['monto1']))
+                        $query->where('factura.total', '>=', $clause['monto1']);
+                    if (!empty($clause['monto2']))
+                        $query->where('factura.total', '<=', $clause['monto2']);
+                    if (!empty($clause['antiguedad'])) {
+                        $value = Carbon::now()->subDays($clause['antiguedad'])->endOfDay();
+                        $query->whereDate('factura.fecha_desde', '<=', $value);
+                    }
+                    if (!empty($clause['centro_contable']))
+                        $query->where('factura.centro_contable_id', $clause['centro_contable']);
+                    if (!empty($clause['creado_por']))
+                        $query->where('factura.created_by', $clause['creado_por']);
+                    if (!empty($clause['estado']))
+                        $query->whereIn('factura.estado_id', $clause['estado']);
+
+                    if (!empty($clause['uuid'])) {
+                        $uuids = array_map('hex2bin', $clause['uuid']);
+                        $query->whereIn('factura.uuid_factura', $uuids);
+                    }
+
+                    if (!empty($clause['numero_orden_compra'])) {
+                        $value = $clause['numero_orden_compra'];
+                        $query->where(function (\Illuminate\Database\Query\Builder $o) use ($value) {
+                            $o->orWhere('orden1.numero', 'like', "%{$value}%");
+                            $o->orWhere('orden2.numero', 'like', "%{$value}%");
+                        });
+                    }
+                });
+
+            if (!empty($clause['con_pagos'])) {
+                $operacion = $clause['con_pagos'] == 'no' ? '=' : '>';
+                $rows->havingRaw("count(pago.id) $operacion 0");
+            }
+
+            $rows = $rows
+                ->groupBy('factura.id')
+                ->orderBy('factura.id', 'desc')
+                ->get();
+
+            $rows = Collect($rows)->map(function ($row) {
+                $row = (array)$row;
+                return array_merge($row, [
+                    'proveedor' => utf8_decode($row['proveedor']),
+                    'centro' => utf8_decode($row['centro']),
+                    'creado_por' => utf8_decode($row['creado_por'])
+                ]);
+            });
+
+        } catch (Exception $e) {
+            log_message('error', "class -> " . __CLASS__ . " function -> " . __METHOD__ . " -> Linea: " . __LINE__ . " --> " . $e->getMessage() . "\r\n");
+        }
+
+        $csv = \League\Csv\Writer::createFromFileObject(new \SplTempFileObject());
+        $csv->insertOne([
+            'Nro. Factura',
+            'Fecha',
+            'Proveedor',
+            'Referencia',
+            'Monto',
+            'Saldo por pagar',
+            __('[CENTRO_CONTABLE]'),
+            'Documentos',
+            'Creado por',
+            'Cantidad de pagos',
+            'Estado'
+        ]);
+
+        $csv->insertAll($rows);
+        $csv->output('facturas_compras.csv');
+
+        exit;
+    }
+
+    function ajax_descargar_csv()
+    {
+        ini_set('memory_limit', '1024M');
+        ini_set('max_execution_time', 0);
+        $csv = Writer::createFromFileObject(new SplTempFileObject());
+        $csv->insertOne(['No. Factura', 'Fecha', 'Proveedor', 'Monto', 'Saldo por pagar', "Centro Contable", 'Creado por', 'Cantidad de pagos', "Estado"]);
+        foreach (Facturas_compras_orm::deEmpresa($this->empresa_id)->whereIn('operacion_type', ['Ordenes_orm', ""])->get() as $row) {
+            try {
+                $csv->insertOne([
+                    $row->codigo,
+                    $row->fecha_desde,
+                    utf8_decode(!is_null($row->proveedor) ? $row->proveedor->nombre : ""),
+                    $row->total,
+                    $row->saldo,
+                    utf8_decode(!is_null($row->centro_contable) ? $row->centro_contable->nombre : 'Varios'),
+                    utf8_decode(isset($row->comprador->nombre) ? $row->comprador->nombre . ' ' . $row->comprador->apellido : ''),
+                    count($row->pagos),
+                    $row->estado->valor
+                ]);
+            } catch (Exception $e) {
+            }
+        }
+        $file_name = "facturas_" . date('ymdi') . ".csv";
+        header('Set-Cookie: fileDownload=true; path=/');
+        header('Cache-Control: max-age=60, must-revalidate');
+        header("Content-type: text/csv");
+        header('Content-Disposition: attachment; filename="' . $file_name . '"');
+
+        $csv->output($file_name);
+    }
+
+    function ajax_descargar()
+    {
+
+        if (!$this->input->is_ajax_request()) {
+            return false;
+        }
+        $modulo = $this->input->post("modulo");
+        $campos = [
+            'modulo' => $modulo,
+            'descargaType' => "Flexio\Jobs\FacturasCompra\FacturasCompraDescarga",
+            'usuario' => $this->id_usuario,
+            'estado' => "pendiente",
+            'empresa_id' => $this->empresa_id
+        ];
+        //$msg =array("subject"=>"Ocurrio un error al guardar la petición","class"=>"error");
+        $result = $this->descargaModel->where($campos)->first();
+        if (!is_null($result)) {
+            $text = "Su petici&oacute;n se encuentra en estado <label class='label label-warning badge'> $result->estado</label>";
+
+        } else {
+            $text = '<div class="toast-title">Se está generando el archivo.</div><div class="toast-message">Recibirá un correo momentáneamente.</div>';
+            $this->descargaModel->create($campos);
+        }
+        $msg = array("subject" => $text, "class" => "info");
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($msg))->_display();
+        exit;
+    }
+
+    //Esta funcion debe eliminarse cuando se cambie de orm a flexio
+    public function getPoliticasValidate()
+    {
+        if (AuthUser::is_superUser()) {
+            return true;
+        }
+        $existencia_politica = false;
+        $factura = $this->facturasCompraRep->get(['empresa_id' => $this->empresa_id, 'id_estado' => 1], NULL, NULL, 1)->first();
+        if (!is_null($factura)) {
+            $existencia_politica = count($factura->politica()) ? true : false;;
+        }
+        return $existencia_politica;
+    }
+
+    public function consulta_completa()
+    {
+
+        $response = new stdClass();
+
+        $request = Illuminate\Http\Request::createFromGlobals();
+        $busqueda = $request->only(['creacion_min', 'creacion_max', 'termino_pago', 'pagos', 'numero_dias']);
+        $politica = $this->getPoliticasValidate();
+
+        //Paramentos de busqueda
+        $numero_factura = $this->input->post('numero_factura');
+        $fecha1 = $this->input->post('fecha1', true);
+        $fecha2 = $this->input->post('fecha2', true);
+        $proveedor = $this->input->post('proveedor', true);
+        $estado = $this->input->post('estado', true);
+        $estado = !empty($estado) ? (is_array($estado) ? $estado : array($estado)) : array();
+        $monto1 = $this->input->post('monto1', true);
+        $monto2 = $this->input->post('monto2', true);
+        $centro_contable = $this->input->post('centro_contable', true);
+        $tipo = $this->input->post('tipo', true);
+        $creado_por = $this->input->post('creado_por', true);
+        $caja_id = $this->input->post('caja_id', true);
+        $item_id = $this->input->post('item_id', true);
+        $pedido_id = $this->input->post('pedido_id', true);
+        $registros = Facturas_compras_orm::deEmpresa($this->empresa_id);
+
+        $categoria_id = $this->input->post('categoria_id', true);
+        $categoria_id = !empty($categoria_id) ? (is_array($categoria_id) ? $categoria_id : array($categoria_id)) : array();
+        $campo = $this->input->post('campo', true);
+
+        if (!empty($busqueda)) {
+            if (is_null($campo)) {
+                $campo = $busqueda;
+            } else if (is_array($campo)) {
+                $campo = array_merge($campo, $busqueda);
+            }
+
+        }
+        //subpanels
+        $orden_compra_id = $this->input->post('orden_compra_id', true);
+        if (isset($campo['orden_compra']) && $campo['orden_compra'] > 0) {
+            $orden_compra_id = $campo['orden_compra'];
+        }
+        //$subcontrato_id = $this->input->post('subcontrato_id', true); Esta linea fue comentada porque esta enviando datos malos al listar y hace que se rompa
+
+        if (!empty($numero_factura)) {
+            $clause_numero['factura_proveedor'] = array('LIKE', "%$numero_factura%");
+            $registros->deNumeroFactura($clause_numero);
+        }
+
+        if (!empty($fecha1)) {
+            $fecha1 = date('Y-m-d', strtotime($fecha1));
+            $registros->deFechaCreacionMayorIgual($fecha1);
+        }
+
+        if (!empty($fecha2)) {
+            $fecha2 = date('Y-m-d', strtotime($fecha2));
+            $registros->deFechaCreacionMenorIgual($fecha2);
+        }
+
+        if (!empty($orden_compra_id)) {
+            $registros->deOrdenDeCompra($orden_compra_id);
+        }
+
+        if (!empty($subcontrato_id)) {
+            $registros->deSubcontrato($subcontrato_id);
+        }
+
+        if (!empty($creado_por)) {
+            $registros->deComprador($creado_por);
+        }
+
+        if (!empty(array_filter($estado))) {
+            $registros->deEstado($estado);
+        }
+
+        if (!empty($monto1)) {
+            $registros->deMontoMayorIgual($monto1);
+        }
+
+        if (!empty($monto2)) {
+            $registros->deMontoMenorIgual($monto2);
+        }
+
+        if (!empty($centro_contable)) {
+            $registros->deCentroContable($centro_contable);
+        }
+        $campo = array_merge($campo, $this->input->post());
+        if (!empty($campo)) {
+            $registros->deFiltro($campo);
+        }
+
+        //filtros de centros contables del usuario
+        $centros = $this->FlexioSession->usuarioCentrosContables();
+        if (!in_array('todos', $centros)) {
+            $registros->whereIn('faccom_facturas.centro_contable_id', $centros);
+        }
+
+        //filtro de facturas por la categoria del usuario
+        $categorias_items = AuthUser::usuarioCategoriaItems();
+
+        if (!in_array('todos', $categorias_items)) {
+            $registros->deCategoria($categorias_items);
+        }
+
+        if (!empty($tipo)) {
+            $registros->deTipo($tipo);
+        }
+        if (!empty($caja_id)) {
+            $registros->whereHas('pagos', function ($q) use ($caja_id) {
+                $q->with(['metodo_pago'])->whereHas('metodo_pago', function ($r) use ($caja_id) {
+                    $r->where('tipo_pago', '=', 'caja_chica')
+                        ->where(Capsule::raw('CONVERT(referencia USING utf8)'), 'like', "%\"caja_id\":\"$caja_id\"%");
+                });
+            });
+        }
+        if (!empty($item_id)) {
+            $registros->deItem($item_id);
+        }
+
+        if (!empty($pedido_id)) {
+            $registros = $registros->dePedido($pedido_id);
+        }
+        if (!empty($categoria_id)) {
+            $registros = $registros->deCategoria($categoria_id);
+        }
+
+        $dataRegistros = $registros->get();
+        foreach ($dataRegistros as $key => $value) {
+            $response->id[$key] = $value['uuid_factura'];
+        }
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')->set_output(json_encode($response))->_display();
+        exit;
+    }
+
+    public function ajax_listar()
+    {
+        if (!$this->input->is_ajax_request()) {
+            return false;
+        }
+
+
+        $request = Illuminate\Http\Request::createFromGlobals();
+        $busqueda = $request->only(['creacion_min', 'creacion_max', 'termino_pago', 'pagos', 'numero_dias']);
+        $politica = $this->getPoliticasValidate();
+
+        //Paramentos de busqueda
+        $numero_factura = $this->input->post('numero_factura');
+        $fecha1 = $this->input->post('fecha1', true);
+        $fecha2 = $this->input->post('fecha2', true);
+        $proveedor = $this->input->post('proveedor', true);
+        $estado = $this->input->post('estado', true);
+        $estado = !empty($estado) ? (is_array($estado) ? $estado : array($estado)) : array();
+        $monto1 = $this->input->post('monto1', true);
+        $monto2 = $this->input->post('monto2', true);
+        $centro_contable = $this->input->post('centro_contable', true);
+        $tipo = $this->input->post('tipo', true);
+        $creado_por = $this->input->post('creado_por', true);
+        $caja_id = $this->input->post('caja_id', true);
+        $item_id = $this->input->post('item_id', true);
+        $pedido_id = $this->input->post('pedido_id', true);
+        $anticipo_id = $this->input->post('campo[anticipo]', true);
+        $registros = Facturas_compras_orm::deEmpresa($this->empresa_id);
+
+        $categoria_id = $this->input->post('categoria_id', true);
+        $categoria_id = !empty($categoria_id) ? (is_array($categoria_id) ? $categoria_id : array($categoria_id)) : array();
+        $campo = !empty($this->input->post('campo', true)) ? $this->input->post('campo', true) : array();
+
+        if (!empty($busqueda)) {
+            if (is_null($campo)) {
+                $campo = $busqueda;
+            } else if (is_array($campo)) {
+                $campo = array_merge($campo, $busqueda);
+            }
+
+        }
+        //subpanels
+        $orden_compra_id = $this->input->post('orden_compra_id', true);
+        if (isset($campo['orden_compra']) && $campo['orden_compra'] > 0) {
+            $orden_compra_id = $campo['orden_compra'];
+        }
+        //$subcontrato_id = $this->input->post('subcontrato_id', true); Esta linea fue comentada porque esta enviando datos malos al listar y hace que se rompa
+
+        if (!empty($numero_factura)) {
+            $clause_numero['factura_proveedor'] = array('LIKE', "%$numero_factura%");
+            $registros->deNumeroFactura($clause_numero);
+        }
+
+        if (!empty($fecha1)) {
+            $fecha1 = date('Y-m-d', strtotime($fecha1));
+            $registros->deFechaCreacionMayorIgual($fecha1);
+        }
+
+        if (!empty($fecha2)) {
+            $fecha2 = date('Y-m-d', strtotime($fecha2));
+            $registros->deFechaCreacionMenorIgual($fecha2);
+        }
+
+        if (!empty($orden_compra_id)) {
+            $registros->deOrdenDeCompra($orden_compra_id);
+        }
+
+        if (!empty($subcontrato_id)) {
+            $registros->deSubcontrato($subcontrato_id);
+        }
+
+        if (!empty($creado_por)) {
+            $registros->deComprador($creado_por);
+        }
+
+
+        if (!empty(array_filter($estado))) {
+            $registros->deEstado($estado);
+        }
+
+        if (!empty($monto1)) {
+            $registros->deMontoMayorIgual($monto1);
+        }
+
+        if (!empty($monto2)) {
+            $registros->deMontoMenorIgual($monto2);
+        }
+
+
+        if (!empty($campo)) {
+            $campo = array_merge($campo, $this->input->post());
+            $registros->deFiltro($campo);
+        }
+
+        //filtros de centros contables del usuario
+        $centros = $this->FlexioSession->usuarioCentrosContables();
+        if (!in_array('todos', $centros)) {
+            //todo: $registros->whereIn('faccom_facturas.centro_contable_id', $centros);
+            $registros->deFiltro(['centro_contable' => $centros]);
+        }
+
+        if (!empty($centro_contable)) {
+            $registros->deFiltro(['centro_contable' => $centro_contable]);
+        }
+
+        //filtro de facturas por la categoria del usuario
+        $categorias_items = AuthUser::usuarioCategoriaItems();
+
+        if (!in_array('todos', $categorias_items)) {
+            $registros->deCategoria($categorias_items);
+        }
+
+        if (!empty($tipo)) {
+            $registros->deTipo($tipo);
+        }
+        if (!empty($caja_id)) {
+            $registros->whereHas('pagos', function ($q) use ($caja_id) {
+                $q->with(['metodo_pago'])->whereHas('metodo_pago', function ($r) use ($caja_id) {
+                    $r->where('tipo_pago', '=', 'caja_chica')
+                        ->where(Capsule::raw('CONVERT(referencia USING utf8)'), 'like', "%\"caja_id\":\"$caja_id\"%");
+                });
+            });
+        }
+        if (!empty($item_id)) {
+            $registros->deItem($item_id);
+        }
+
+        if (!empty($pedido_id)) {
+            $registros = $registros->dePedido($pedido_id);
+        }
+        /*if (!empty($anticipo_id)) {
+            $registros = $registros->deAnticipo($anticipo_id);
+        }*/
+
+        if (!empty($categoria_id)) {
+            $registros = $registros->deCategoria($categoria_id);
+        }
+
+        $count = $registros->count();
+
+        list($page, $limit, $sidx, $sord) = Jqgrid::inicializar();
+        list($total_pages, $page, $start) = Jqgrid::paginacion($count, $limit, $page);
+        if ($sidx != null && $sord != null) {
+            $registros->orderBy($sidx, $sord);
+        }
+        if ($limit != null) {
+            $registros->skip($start)->take($limit);
+        }
+
+        $response = new stdClass();
+        $response->page = $page;
+        $response->total = $total_pages;
+        $response->records = $count;
+        if ($count > 0) {
+            foreach ($registros->get() as $i => $row) {
+                $comprador = $row->comprador;
+                $hidden_options = '';
+                $nombre_completo = $comprador['nombre'] . ' ' . $comprador['apellido'];
+                $link_option = '<button class="viewOptions btn btn-success btn-sm" type="button" data-id="' . $row->uuid_factura . '"><i class="fa fa-cog"></i> <span class="hidden-xs hidden-sm hidden-md">Opciones</span></button>';
+
+                if ($this->auth->has_permission('acceso', 'facturas_compras/ver/(:any)')) {
+                    $hidden_options = '<a href="' . base_url('facturas_compras/ver/' . $row->uuid_factura) . '" data-id="' . $row->uuid_factura . '" class="btn btn-block btn-outline btn-success">Ver detalle</a>';
+                }
+                if ($row->pagable && $this->auth->has_permission('acceso', 'pagos/crear/(:any)')) {
+                    $hidden_options .= '<a href="#" data-id="' . $row->uuid_factura . '" class="btn btn-block btn-outline btn-success aplicar-nota-credito-favor">Aplicar cr&eacute;dito a favor</a>';
+                }
+
+                if ($this->auth->has_permission('acceso', 'pagos/crear/(:any)')) {
+                    $hidden_options .= '<a href="#" data-id="' . $row->codigo . '" class="btn btn-block btn-outline btn-success irPagos">Ver pagos</a>';
+                }
+
+                if ($row->pagable and $this->auth->has_permission('acceso', 'pagos/crear') and $row->estado_id != 20) {
+                    $hidden_options .= '<a href="' . base_url('pagos/crear/facturacompra' . $row->id) . '" class="btn btn-block btn-outline btn-success">Pagar</a>';
+                }
+
+                $hidden_options .= '<a href="' . base_url('depreciacion_activos_fijos/crear?tipo_item=20&factura_id=' . $row->id) . '" class="btn btn-block btn-outline btn-success">Amortizar factura</a>';
+
+                if ($this->auth->has_permission('acceso', 'facturas_compras/ver/(:any)')) {
+                    $hidden_options .= '<a href="' . base_url('documentos/subir_documento/' . $row->uuid_factura) . '" class="btn btn-block btn-outline btn-success">Subir documento</a>';
+                }
+
+                $hidden_options .= '<a href="' . base_url('tarea/crear/facturas_compras/' . $row->id) . '" class="btn btn-block btn-outline btn-success">Crear tarea</a>';
+
+                if ($politica && $this->auth->has_permission('acceso', 'facturas_compras/ver/(:any)')) {
+                    $hidden_options .= '<a href="#" data-id="' . $row->id . '" data-uuid="' . $row->uuid_factura . '" class="btn btn-block btn-outline btn-success change-state-btn">Cambiar estado</a>';
+                }
+
+                if ($this->auth->has_permission('acceso', 'facturas_compras/ver/(:any)') && in_array($row->estado_id, [14, 15, 16, 20]))
+                    $hidden_options .= '<a href="#" data-id="' . $row->id . '" class="btn btn-block btn-outline btn-success factura_arancelaria">Registrar gastos de importación</a>';
+
+                $hidden_options .= '<a  href="' . base_url('facturas_compras/historial/' . $row->uuid_factura) . '"   data-id="' . $row->id . '" class="btn btn-block btn-outline btn-success">Ver bit&aacute;cora</a>';
+                $hidden_options .= '<a  href="' . base_url('documentos/detalle_documentos/' . $row->uuid_factura) . '"   data-id="' . $row->id . '" class="btn btn-block btn-outline btn-success">Previsualizar documentos</a>';
+                $hidden_options .= '<a  href="#"   data-id="' . $row->id . '" class="btn btn-block btn-outline btn-success copy_other_company2">Duplicar</a>';
+                $hidden_options .= '<a  href="#"   data-id="' . $row->id . '" class="btn btn-block btn-outline btn-success copy_other_company">Copiar a otra empresa</a>';
+
+                $response->rows[$i]['id'] = $row->uuid_factura;
+                if ($this->auth->has_permission('acceso', 'facturas_compras/ver/(:any)')) {
+                    $link = '<a class="link" href="' . base_url('facturas_compras/ver/' . $row->uuid_factura) . '" style="color:blue;">' . $row->codigo . '</a>';
+                } else {
+                    $link = $row->codigo;
+                }
+
+                if ($politica) {
+                    $link_estado = $row->present()->estado_label;
+                } else {
+                    $link_estado = str_replace("change-state-btn", "", $row->present()->estado_label);
+                }
+                $datos_provedor = '';
+                if ($row->operacion_type == 'Flexio\Modulo\Cajas\Models\Cajas') {
+
+                    if (!is_null($row->proveedor_caja)) {
+                        $datos_provedor = '<a class="link" href="' . base_url('proveedores_caja/editar/' . $row->proveedor_caja->uuid_proveedor_caja . '?tipo=proveedor_caja') . '" style="color:blue;">' . $row->proveedor_caja->nombre . '</a>';
+                    } else {
+                        $datos_provedor = !is_null($row->proveedor) ? '<a class="link" href="' . base_url('proveedores/ver/' . $row->proveedor->uuid_proveedor) . '" style="color:blue;">' . $row->proveedor->nombre . '</a>' : '';
+                    }
+                } else {
+                    $datos_provedor = !is_null($row->proveedor) ? '<a class="link" href="' . base_url('proveedores/ver/' . $row->proveedor->uuid_proveedor) . '" style="color:blue;">' . $row->proveedor->nombre . '</a>' : '';
+
+                }
+
+                $response->rows[$i]['cell'] = array(
+                    $link,
+                    $row->fecha_desde,
+                    $datos_provedor,
+                    $row->present()->total,
+                    $row->present()->saldo,
+
+                    !is_null($row->centro_contable) ? $row->centro_contable->nombre : 'Varios',
+                    $row->present()->documentos,
+                    $nombre_completo,
+                    '<a class="link irPagos" href="#" data-id="' . $row->codigo . '">' . $row->present()->pagos . '</a>',
+                    $link_estado,
+                    $link_option,
+                    $hidden_options,
+                    !empty($row->estado) ? $row->estado->id : ''
+                );
+            }
+        }
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($response))->_display();
+
+        exit;
+    }
+
+    public function ajax_listar_de_item()
+    {
+        if (!$this->input->is_ajax_request()) {
+            return false;
+        }
+
+        $clause = $this->input->post();
+        $clause['empresa_id'] = $this->empresa_id;
+
+        $count = $this->facturasCompraRep->count($clause);
+
+        list($page, $limit, $sidx, $sord) = Jqgrid::inicializar();
+        list($total_pages, $page, $start) = Jqgrid::paginacion($count, $limit, $page);
+
+        $facturas = $this->facturasCompraRep->get($clause, $sidx, $sord, $limit);
+
+        $response = new stdClass();
+        $response->page = $page;
+        $response->total = $total_pages;
+        $response->records = $count;
+
+        if ($count > 0) {
+            foreach ($facturas as $i => $row) {
+                $response->rows[$i]['id'] = $row->uuid_factura;
+                $response->rows[$i]['cell'] = $this->facturasCompraRep->getCollectionCellDeItem($row, $clause['item_id']);
+            }
+        }
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($response))->_display();
+
+        exit;
+    }
+
+    public function copy_other_company()
+    {
+        $errors = '';
+        $tipos = [
+            'compra' => ['url' => 'facturas_compras/crear', 'class' => FacturaDuplicatedToOtherCampanyGetter::class],
+            'venta' => ['url' => 'facturas/creando', 'class' => FacturaVentaDuplicatedToOtherCampanyGetter::class]
+        ];
+
+        try {
+            $clause = $this->input->post();
+
+            if (empty($clause['empresa_grupo']))
+                $clause['empresa_grupo'] = $this->empresa_id;
+
+            $factura = FacturaCompra::where('id', $clause['factura_id'])->where('empresa_id', $this->empresa_id)->first();
+            $tipo = !empty($clause['empresa_grupo_tipo']) && array_key_exists($clause['empresa_grupo_tipo'], $tipos)
+                ? $tipos[$clause['empresa_grupo_tipo']]
+                : null;
+
+            if (!count($tipo))
+                throw new \Exception("Debe indicar que tipo de factura quiere crear.");
+
+            if (!!is_null($factura))
+                throw new \Exception("No se encuentra la factura que requiere duplicar.");
+
+            $class = $tipo['class'];
+            $params = (new $class($factura, $clause))->get();
+
+            //store session
+            $this->session->set_flashdata('factura_grupo', $params);
+            //change company
+            $empresa_grupo = Empresa::where('id', $clause['empresa_grupo'])->first();
+            $this->session->set_userdata([
+                'uuid_empresa' => $empresa_grupo->uuid_empresa,
+                'nombre_empresa' => $empresa_grupo->nombre
+            ]);
+            $cache = Cache::inicializar();
+            $cache->delete("usuario-roles-" . $this->session->userdata('huuid_usuario'));
+
+        } catch (\Exception $e) {
+            $errors .= $e->getMessage();
+        }
+
+        $response = Collect([
+            'code' => strlen($errors) ? 401 : 200,
+            'message' => strlen($errors) ? $errors : '<b>Éxito!</b><br>Su solicitud se ha procesado correctamente',
+            'url' => strlen($errors) || !isset($tipo) ? 'facturas_compras/listar' : $tipo['url']
+        ]);
+
+        $this->output->set_status_header($response['code'])->set_content_type('application/json', 'utf-8')
+            ->set_output($response)->_display();
+        exit;
+    }
+
+    public function ocultotabla($modulo_id = null)
+    {
+
+        $this->assets->agregar_js(array(
+            'public/assets/js/default/bootbox.min.js',
+            'public/assets/js/modules/facturas_compras/factura_arancelaria.js',
+            'public/assets/js/modules/facturas_compras/copy_other_company.js',
+            'public/assets/js/modules/facturas_compras/copy_other_company2.js',
+            'public/assets/js/modules/facturas_compras/aplicar_credito.js',
+            'public/assets/js/modules/facturas_compras/aplicar_nota.js',
+            'public/assets/js/modules/facturas_compras/change_state.js',
+            'public/assets/js/modules/facturas_compras/tabla2.js',
+        ));
+
+        //Verificar desde donde se esta llamando
+        //la tabla de facturas
+        if (preg_match('/cajas/i', $this->router->fetch_class())) {
+            if (!empty($modulo_id)) {
+                $this->assets->agregar_var_js(array(
+                    'caja_id' => $modulo_id,
+                ));
+            }
+        } elseif (preg_match('/inventarios/i', $this->router->fetch_class()) and !empty($modulo_id)) {
+            $this->assets->agregar_var_js(array(
+                'item_id' => $modulo_id,
+            ));
+        } elseif (preg_match('/pedidos/i', $this->router->fetch_class()) and !empty($modulo_id)) {
+            $this->assets->agregar_var_js(array(
+                'pedidos_id' => $modulo_id,
+            ));
+        } elseif (preg_match('/anticipos/i', $this->router->fetch_class()) and !empty($modulo_id)) {
+
+            $this->assets->agregar_var_js(array(
+                'anticipo_id' => $modulo_id['anticipo'],
+            ));
+        } else {
+            if (!empty($modulo_id)) {
+                $this->assets->agregar_var_js(array(
+                    'cliente_id' => $modulo_id,
+                ));
+            }
+        }
+
+        $this->load->view('tabla');
+    }
+
+    public function ocultotablaV2($sp_string_var = '')
+    {
+        $this->assets->agregar_js(array(
+            'public/assets/js/modules/facturas_compras/aplicar_credito.js',
+            'public/assets/js/modules/facturas_compras/aplicar_nota.js',
+            'public/assets/js/modules/facturas_compras/change_state.js',
+            'public/assets/js/modules/facturas_compras/tabla2.js',
+        ));
+
+        $sp_array_var = explode('=', $sp_string_var);
+        if (count($sp_array_var) == 2) {
+            $this->assets->agregar_var_js(array(
+                $sp_array_var[0] => $sp_array_var[1],
+            ));
+        }
+
+        $this->load->view('tabla');
+    }
+
+    public function ocultotablaProveedores($modulo_id = null)
+    {
+        $this->assets->agregar_js(array(
+            'public/assets/js/modules/facturas_compras/aplicar_credito.js',
+            'public/assets/js/modules/facturas_compras/aplicar_nota.js',
+            'public/assets/js/modules/facturas_compras/change_state.js',
+            'public/assets/js/modules/facturas_compras/tabla2.js',
+        ));
+
+        if (!empty($modulo_id)) {
+            $this->assets->agregar_var_js(array(
+                'proveedor_id' => $modulo_id,
+                'campo' => collect(['proveedor' => $modulo_id])
+            ));
+        }
+
+        $this->load->view('tabla');
+    }
+
+    public function ocultotablaOrdenesCompras($modulo_id = null)
+    {
+        $this->assets->agregar_js(array(
+            'public/assets/js/modules/facturas_compras/aplicar_credito.js',
+            'public/assets/js/modules/facturas_compras/aplicar_nota.js',
+            'public/assets/js/modules/facturas_compras/change_state.js',
+            'public/assets/js/modules/facturas_compras/tabla2.js',
+        ));
+
+        if (!empty($modulo_id)) {
+            $this->assets->agregar_var_js(array(
+                'orden_compra_id' => $modulo_id,
+            ));
+        }
+
+        $this->load->view('tabla');
+    }
+
+    public function ocultotablaSubcontratos($modulo_id = null)
+    {
+        $this->assets->agregar_js(array(
+            'public/assets/js/modules/facturas_compras/aplicar_credito.js',
+            'public/assets/js/modules/facturas_compras/aplicar_nota.js',
+            'public/assets/js/modules/facturas_compras/change_state.js',
+            'public/assets/js/modules/facturas_compras/tabla2.js',
+        ));
+        if (is_array($modulo_id)) {
+            $this->assets->agregar_var_js([
+                'campo' => collect($modulo_id),
+            ]);
+        } elseif (!is_array($modulo_id) && !empty($modulo_id)) {
+            $this->assets->agregar_var_js(array(
+                'subcontrato_id' => $modulo_id,
+            ));
+        }
+
+        $this->load->view('tabla');
+    }
+
+    public function ocultotabla_de_item($sp_string_var = '')
+    {
+        $this->assets->agregar_js(array(
+            'public/assets/js/modules/facturas_compras/change_state.js',
+            'public/assets/js/modules/facturas_compras/tabla_de_item.js',
+        ));
+
+        $sp_array_var = explode('=', $sp_string_var);
+        if (count($sp_array_var) == 2) {
+            $this->assets->agregar_var_js(array(
+                $sp_array_var[0] => $sp_array_var[1],
+            ));
+        }
+
+        $this->load->view('tabla');
+    }
+
+    public function crear($foreing_key = '')
+    {
+        $empezable_id = '';
+        $empezable_type = '';
+        $concepto_anexo_43 = 1;
+
+        if (AuthUser::is_superUser()) {
+            $_permiso_editar = 1;
+        } else {
+            if (!$this->auth->has_permission('acceso', 'facturas_compras/crear')) {
+                $acceso = 0;
+                redirect(base_url());
+            }
+            if (!$this->auth->has_permission('acceso', 'facturas_compras/concepto_anexo_43')) {
+                $concepto_anexo_43 = 0;
+            }
+
+            $_permiso_editar = 1;
+        }
+
+        if (preg_match('/proveedor/', $foreing_key)) {
+            //$proveedor_id   = str_replace('proveedor', '', $foreing_key);
+            //queda pendiente integracion
+        } elseif (preg_match('/ordencompra/', $foreing_key)) {
+            $empezable_id = str_replace('ordencompra', '', $foreing_key);
+            $empezable_type = 'orden_compra';
+        } elseif (preg_match('/subcontrato/', $foreing_key)) {
+            $empezable_id = str_replace('subcontrato', '', $foreing_key);
+            $empezable_type = 'subcontrato';
+
+        } elseif (preg_match('/ordenes/', $foreing_key)) {
+            $ordenes_id = $this->input->post("ordenes_id", true);
+            $centro_id = $this->input->post("centro_id", true);
+            $bodega_id = $this->input->post("bodega_id", true);
+            $bodega_nombre = $this->input->post("bodega_nombre", true);
+            $proveedor_id = $this->input->post("proveedor_id", true);
+            $proveedor_nombre = $this->input->post("proveedor_nombre", true);
+
+            $proveedorModel = $this->proveedoresRep->find($proveedor_id);
+
+            $cuentaPorPagar = $this->auth->has_permission('crear__cuentaPorPagar', 'facturas_compras/crear') ? 1 : 0;
+            $this->assets->agregar_var_js(array(
+                'orden_multiple' => true,
+                'centro_id' => !empty($centro_id) ? $centro_id : "",
+                'bodega_id' => !empty($bodega_id) ? $bodega_id : "",
+                'bodega_nombre' => !empty($bodega_nombre) ? $bodega_nombre : "",
+                'proveedor_id' => !empty($proveedor_id) ? $proveedor_id : "",
+                'proveedor_nombre' => !empty($proveedor_nombre) ? $proveedor_nombre : "",
+                'retiene_impuesto' => is_null($proveedorModel) ? '' : $proveedorModel->retiene_impuesto,
+                'ordenes_id' => collect($ordenes_id),
+                'cuenta_por_pagar' => $cuentaPorPagar
+            ));
+        } elseif (preg_match('/cajas/', $foreing_key)) {
+            $empezable_id = str_replace('cajas', '', $foreing_key);
+            $empezable_type = 'cajas';
+            $caja = $this->CajasRepository->find($empezable_id);
+            $this->assets->agregar_var_js(array(
+                'centro_id' => !empty($caja->centro_id) ? $caja->centro_id : "",
+                'saldo_caja' => !empty($caja->saldo) ? $caja->saldo : "",
+                'caja_id' => !empty($caja->id) ? $caja->id : "",
+            ));
+        } elseif (preg_match('/reembolso/', $foreing_key)) {
+            $empezable_id = str_replace('reembolso', '', $foreing_key);
+            $empezable_type = 'reembolso';
+            $reembolso = Reembolso::find($empezable_id);
+            $this->assets->agregar_var_js(array(
+                'centro_id' => !empty($reembolso->centro_id) ? $reembolso->centro_id : "",
+                'saldo_caja' => !empty($reembolso->saldo) ? $reembolso->saldo : "",
+                'reembolso_id' => !empty($reembolso->id) ? $reembolso->id : "",
+            ));
+        } elseif (preg_match('/polizas_seguro/', $foreing_key)) {
+            $empezable_id = str_replace('polizas_seguro', '', $foreing_key);
+            $empezable_type = 'polizas_seguro';
+            $poliza = PolizasSeguro::find($empezable_id);
+            $this->assets->agregar_var_js(array(
+                'centro_id' => '',//!empty($poliza->centro_id) ? $poliza->centro_id : "",
+                'saldo_caja' => '',//!empty($poliza->saldo) ? $poliza->saldo : "",
+                'poliza_id' => !empty($poliza->id) ? $poliza->id : "",
+            ));
+        }
+
+        $acceso = 1;
+        $permiso_editar_retenido = $this->auth->has_permission('editarPorcentajeMontoRetenido', 'facturas_compras/ver/(:any)') ? 1 : 0;
+
+        $mensaje = $clause = $data = [];
+        $data['info']['empezable_id'] = !empty($empezable_id) ? $empezable_id : '';
+        if (!$this->auth->has_permission('acceso', 'facturas_compras/crear')) {
+            $acceso = 0;
+            $mensaje = array('estado' => 500, 'mensaje' => '<b>¡Error!</b> Usted no cuenta con permiso para esta solicitud', 'clase' => 'alert-danger');
+            $this->session->set_flashdata('mensaje', $mensaje);
+        }
+
+        $this->_Css();
+        $this->_js();
+
+        $empezable = collect([
+            'id' => !empty($empezable_id) ? $empezable_id : '',
+            'type' => !empty($empezable_type) ? $empezable_type : '',
+            'orden_compras' => [],
+            'subcontratos' => [],
+            'rembolsos' => [],
+            'polizas_seguros' => []
+        ]);
+        $is_admin = $this->UsuariosRepository->findByUuid($this->session->userdata('huuid_usuario'));
+        $is_admin = $is_admin->roles_reales->pluck('superuser')->last();
+        $factura_grupo = $this->session->flashdata('factura_grupo');
+        $this->assets->agregar_var_js(array(
+            'vista' => 'crear',
+            'acceso' => $acceso == 0 ? $acceso : $acceso,
+            'empezable' => $empezable,
+            'politica_transaccion' => collect([]),
+            'permiso_editar_retenido' => $permiso_editar_retenido,
+            'super_user' => 0,
+            'permiso_editar' => $_permiso_editar,
+            'editarCuenta' => 1,
+            'concepto_anexo_43' => $concepto_anexo_43,
+            'factura_grupo' => !empty($factura_grupo) ? $factura_grupo : 0,
+            'permisoCrearSinOC' => $this->auth->has_permission('crear__sinOrdenCompra', 'facturas_compras/crear') ? 1 : 0
+        ));
+
+        $data['mensaje'] = $mensaje;
+
+        $breadcrumb = array(
+            'titulo' => '<i class="fa fa-shopping-cart"></i> Factura de compra: Crear',
+            'ruta' => array(
+                0 => array(
+                    'nombre' => 'Compras',
+                    'activo' => false,
+                ),
+                1 => array(
+                    'nombre' => 'Facturas de compras',
+                    'activo' => true,
+                    'url' => 'facturas_compras/listar',
+                ),
+
+                2 => array(
+                    'nombre' => '<b>Crear</b>',
+                    'activo' => true,
+                ),
+            )
+        );
+        $breadcrumb["menu"]["opciones"]["#descargarPlantillaItems"] = "Descargar plantilla para importar ítems";
+        $breadcrumb["menu"]["opciones"]["#importarPlantillaItems"] = "Importar ítems";
+        $breadcrumb["menu"]["opciones"]["#helpFacturasCompras"] = "Ayuda";
+
+        $this->template->agregar_titulo_header('Crear Factura');
+        $this->template->agregar_breadcrumb($breadcrumb);
+        $this->template->agregar_contenido($data);
+        $this->template->visualizar();
+    }
+
+    function checkFacturaDeclaracionEnviada($factura_compra)
+    {
+        $declaracion = (new Flexio\Modulo\DeclaracionesFiscales\Models\DeclaracionFiscalItem)->where("declarable_id", $factura_compra->declarable_id)->first();
+        return !empty($declaracion->declaracionFiscal) && $declaracion->declaracionFiscal->estado == 'enviado' ? true : false;
+    }
+
+    public function ver($uuid = null)
+    {
+        $toast = new Flexio\Library\Toast();
+
+        $acceso = 1;
+        $concepto_anexo_43 = 1;
+        $is_admin = 0;
+        $mensaje = array();
+        if (AuthUser::is_superUser()) {
+            $_permiso_editar = 1;
+            $is_admin = 1;
+        } else {
+            $_permiso_editar = $this->auth->has_permission('ver__editarFactura', 'facturas_compras/ver/(:any)'); //Permiso de editar
+            $_permiso_editar = ($_permiso_editar == 1) ? 1 : 0; //Permiso de editar
+            if ($_permiso_editar == 0) {
+                $_permiso_ver = $this->auth->has_permission('acceso', 'facturas_compras/ver/(:any)');
+                $_permiso_ver = ($_permiso_ver == 1) ? 1 : 0; //Permiso de editar
+                if ($_permiso_ver == 0) {
+                    redirect(base_url('/'));
+                } else {
+                    $_permiso_editar = 0;
+                }
+            }
+
+            if (!$this->auth->has_permission('acceso', 'facturas_compras/concepto_anexo_43')) {
+                $concepto_anexo_43 = 0;
+            }
+        }
+
+        $this->_Css();
+        $this->_js();
+        $permiso_editar_retenido = $this->auth->has_permission('editarPorcentajeMontoRetenido', 'facturas_compras/crear') ? 1 : 0;
+
+        $cuentaPorPagar = $this->auth->has_permission('crear__cuentaPorPagar', 'facturas_compras/crear') ? 1 : 0;
+
+        $factura_compra = $this->FacturaCompraRepository->findByUuid($uuid);
+
+        try {
+            $descripcion = "{$factura_compra->codigo}" . (!empty($factura_compra->proveedor) ? " - " . $factura_compra->proveedor->nombre : "");
+            (new ConsultaGuardar($descripcion))->guardar();
+        } catch (Exception $e) {
+            log_message("error", "Controlador: " . __CLASS__ . "\nMetodo: " . __METHOD__ . "\nLinea: " . __LINE__ . "\nMensaje: " . $e->getMessage() . "\n\n");
+        }
+
+        // Verificar si factura esta asociada a alguna
+        // declaracion fiscal en estdo enviando.
+        // Si existe condicion, no puede editar factura.
+        // Card No. https://trello.com/c/OMECQGSm
+        if ($this->checkFacturaDeclaracionEnviada($factura_compra)) $_permiso_editar = 0;
+
+        if ($factura_compra->operacion_type == 'Flexio\Modulo\Cajas\Models\Cajas') {
+            $empezable = collect([
+                'id' => '',
+                'type' => 'cajas',
+                'types' => [0 => ['id' => 'cajas', 'nombre' => 'Proveedores de caja']],
+                'options' => [0 => ['id' => '', 'nombre' => '']],
+            ]);
+        } elseif ($factura_compra->operacion_type == 'Flexio\Modulo\Reembolsos\Models\Reembolso') {
+            $empezable = collect([
+                'id' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? $factura_compra->operacion->id : '',
+                'type' => 'reembolso',
+                'types' => [0 => ['id' => 'reembolso', 'nombre' => 'Reembolso']],
+                'options' => [],
+                'reembolsos' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ?
+                    [0 => ['id' => $factura_compra->operacion_id, 'nombre' => $factura_compra->operacion->codigo . ' - ' . $factura_compra->operacion->nombre]] : []
+            ]);
+        } elseif ($factura_compra->operacion_type === ContratoRecurrente::class) {
+            $contrato = $factura_compra->operacion;
+            $empezable = collect([
+                'id' => $contrato->id,
+                'type' => 'contrato_recurrente',
+                'types' => [0 => ['id' => 'contrato_recurrente', 'nombre' => 'Contrato recurrente']],
+                'options' => [],
+                'contrato_recurrentes' => [0 => ['id' => $contrato->id, 'nombre' => $contrato->nombre_completo]]
+            ]);
+        } elseif ($factura_compra->operacion_type == 'Flexio\Modulo\SubContratos\Models\SubContrato') {
+
+            $empezable = collect([
+                'id' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? $factura_compra->operacion->id : '',
+                'type' => 'subcontrato',
+                'types' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? [0 => ['id' => 'subcontrato', 'nombre' => array_search($factura_compra->operacion_type, $this->operaciones_nombres)]] : [],
+                'options' => [],
+                'subcontratos' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? [0 => ['id' => $factura_compra->operacion_id, 'nombre' => $factura_compra->proveedor->nombre . ' - ' . $factura_compra->operacion->numero_documento]] : [],
+            ]);
+        } elseif (preg_match("/ordenes/i", $factura_compra->operacion_type)) {
+
+            $empezable = collect([
+                'id' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? $factura_compra->operacion->id : '',
+                'type' => 'orden_compra',
+                'types' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? [0 => ['id' => 'orden_compra', 'nombre' => array_search($factura_compra->operacion_type, $this->operaciones_nombres)]] : [],
+                'orden_compras' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? [0 => ['id' => $factura_compra->operacion->id, 'nombre' => $factura_compra->proveedor->nombre . ' - ' . $factura_compra->operacion->numero_documento]] : [],
+            ]);
+        } else {
+            $empezable = collect([
+                'id' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? $factura_compra->operacion->id : '',
+                'type' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? 'option' : '',
+                'types' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? [0 => ['id' => 'option', 'nombre' => array_search($factura_compra->operacion_type, $this->operaciones_nombres)]] : [],
+                'options' => !empty($factura_compra->operacion_type) && !is_null($factura_compra->operacion) ? [0 => ['id' => $factura_compra->operacion->id, 'nombre' => $factura_compra->proveedor->nombre . ' - ' . $factura_compra->operacion->numero_documento]] : [],
+            ]);
+        }
+
+        //$is_admin = $this->UsuariosRepository->findByUuid($this->session->userdata('huuid_usuario'));
+
+        $pertenececentrocontable = false;
+
+        $usuarios_centros = $this->FlexioSession->usuarioCentrosContables();
+        if (in_array($factura_compra->centro_contable_id, $usuarios_centros) || in_array('todos', $usuarios_centros)) {
+            $pertenececentrocontable = true;
+        }
+
+        if (!$pertenececentrocontable) {
+            $toast->setUrl('facturas_compras/listar')->run('exception', ['La factura no pertenece a su centro contable']);
+        }
+        //$is_admin = $is_admin->roles_reales->pluck('superuser')->last();
+        // dd($factura_compra->politica()->toArray());
+        $this->assets->agregar_var_js(array(
+            'vista' => 'editar',
+            'acceso' => $acceso == 0 ? $acceso : $acceso,
+            'factura' => $this->FacturaCompraRepository->getCollectionCampos($factura_compra), //falta el metodo get collect
+            'empezable' => $empezable,
+            'politica_transaccion' => $factura_compra->politica(),
+            'permiso_editar_retenido' => $permiso_editar_retenido,
+            'super_user' => $is_admin,
+            'permiso_editar' => $_permiso_editar,
+            'editarCuenta' => $this->auth->has_permission('ver__editarCuentaItem', 'facturas_compras/ver/(:any)') ? 1 : 0,
+            'cuenta_por_pagar' => $cuentaPorPagar,
+            'concepto_anexo_43' => $concepto_anexo_43
+
+        ));
+
+        //Verificar si se trata de una factura creada con varias ordenes de compra
+        if (empty($factura_compra->operacion_type) && empty($factura_compra->operacion_id) && !empty($factura_compra->ordenes()->get()->toArray())) {
+            $this->assets->agregar_var_js(array(
+                'ordenes_multiple' => 1,
+            ));
+        }
+
+        $data = array();
+        $data['factura_compra_id'] = $factura_compra->id;
+        $data['factura_obj'] = $factura_compra;
+        $data['mensaje'] = $mensaje;
+
+        $breadcrumb = array(
+            'titulo' => '<i class="fa fa-shopping-cart"></i> Factura de compra: ' . $factura_compra->factura_proveedor,
+            'menu' => array(
+                'nombre' => 'Acci&oacute;n',
+                'url' => '#',
+                'opciones' => array(),
+            ),
+            'ruta' => array(
+                0 => array(
+                    'nombre' => 'Compras',
+                    'activo' => false,
+                ),
+                1 => array(
+                    'nombre' => 'Facturas de compras',
+                    'activo' => false,
+                    'url' => 'facturas_compras/listar',
+                ),
+                2 => array(
+                    'nombre' => '<b>Detalle</b>',
+                    'activo' => true,
+
+                ),
+
+            ),
+        );
+        $breadcrumb['menu']['opciones']['facturas_compras/historial/' . $factura_compra->uuid_factura] = 'Ver bit&aacute;cora';
+        $breadcrumb['menu']['opciones']['documentos/subir_documento/' . $factura_compra->uuid_factura] = 'Subir documento';
+        $breadcrumb['menu']['opciones']['pagos/crear/facturacompra' . $factura_compra->id] = 'Pagar';
+        $breadcrumb["menu"]["opciones"]["#descargarPlantillaItems"] = "Descargar plantilla para importar ítems";
+        $breadcrumb["menu"]["opciones"]["#importarPlantillaItems"] = "Importar ítems";
+        $breadcrumb["menu"]["opciones"]["#helpFacturasCompras"] = "Ayuda";
+
+        //$hidden_options .= '<a href="'.base_url('pagos/crear/facturacompra'.$row->id).'" class="btn btn-block btn-outline btn-success">Pagar</a>';
+
+
+        $this->template->agregar_titulo_header('Editar Factura de Compra');
+        $this->template->agregar_breadcrumb($breadcrumb);
+        $this->template->agregar_contenido($data);
+        $this->template->visualizar();
+    }
+
+    public function ocultoformulario($info)
+    {
+        $this->assets->agregar_js(array(
+            'public/assets/js/plugins/ckeditor/ckeditor.js',
+            'public/assets/js/plugins/ckeditor/adapters/jquery.js',
+            'public/assets/js/default/vue/components/empezar_desde.js',
+            'public/assets/js/default/vue/directives/pop_over_precio.js',
+            'public/assets/js/default/vue/directives/pop_over_cantidad.js',
+            'public/assets/js/error_placement/main.js',
+            'public/assets/js/default/bootbox.min.js',
+            'public/resources/compile/modulos/facturas_compras/formulario.js',
+        ));
+
+        $centros = $this->FlexioSession->usuarioCentrosContables();
+
+        $orden_compras = $subcontratos = collect([]);
+        $reembolsos = collect([]);
+        $polizas_seguros = collect([]);
+        $catalogos = Flexio\Modulo\Catalogos\Models\Catalogo::where('flexio_catalogos.modulo', 'proveedores')->get();
+        $conceptos = $catalogos->filter(function ($catalogo) {
+            return $catalogo->tipo == 'concepto';
+        });
+
+
+        if (isset($info['vista']) && $info['vista'] == 'crear') {
+            $orden_compras = collect([]);
+            $subcontratos = collect([]);
+            $polizas_seguros = collect([]);
+
+
+            if (!empty($info['info']['empezable_id'])) {
+                $_id = !empty($info['info']['empezable_id']) ? $info['info']['empezable_id'] : '';
+                $clause = ['empresa_id' => $this->empresa_id, 'id' => $_id, 'estado_impuesto' => 'Activo'];
+                $orden_compras = $this->ordenesCompraRep->getCollectionOrdenesCompraAjax($this->ordenesCompraRep->get($clause));
+                $polizas_seguros = $this->polizasSeguroRep->getCollectionPolizasSeguroAjax($this->polizasSeguroRep->get($clause));
+                $subcontratos = $this->subcontratosRep->getCollectionSubcontratosAjax($this->subcontratosRep->getSubContratos($clause));
+                $repoReem = new Flexio\Modulo\Reembolsos\Repositorio\ReembolsoRepositorio($clause);
+                $reemEmpezable = $repoReem->getRegistos()->collectionFacturaCompra();
+                $reembolsos = $reemEmpezable;
+                unset($clause['id']);
+            }
+        }
+
+        $clause = [
+            'empresa_id' => $this->empresa_id,
+            'empresa' => $this->empresa_id,
+            'facturables' => true,
+            'transaccionales' => true,
+            'conItems' => true,
+            'campo' => ['centros_contables' => $centros],
+            'estado_impuesto' => 'Activo'
+        ];
+
+        $usuario_id = $this->id_usuario;
+
+        if (isset($info['factura'])) {
+            $usuario_id = $info['factura']->created_by;
+        }
+
+        $cuenta_por_pagar_id = $this->FacturaCompraCatalogoRepository->cuentaPorPagarDefault($this->empresa_id);
+        $cuenta_por_pagar_model = $this->FacturaCompraCatalogoRepository->cuentaPorPagarDefaultModel($this->empresa_id);
+        if (empty($cuenta_por_pagar_id)) {
+            $this->assets->agregar_var_js([
+                'flexio_mensaje' => Collect(['tipo' => 'error', 'mensaje' => 'Por favor, configure una cuenta por pagar a proveedores.'])
+            ]);
+        }
+
+        $this->assets->agregar_var_js(array(
+            'orden_compras' => $orden_compras,
+            'subcontratos' => $subcontratos,
+            'polizas_seguros' => $polizas_seguros,
+            'reembolsos' => $reembolsos,
+            'proveedores' => collect([]),
+            'terminos_pago' => $this->FacturaVentaCatalogoRepository->getTerminoPago(),
+            'usuarios' => collect([]),
+            'centros_contables' => (new CentroTablaCatalogoGetter($clause))->get(),
+            'bodegas' => collect([]),
+            'estados' => $this->FacturaCompraCatalogoRepository->get(['tipo' => 'estado_factura_compra']),
+            'categorias' => $this->ItemsCategoriasRepository->getCollectionCategorias($this->ItemsCategoriasRepository->get($clause)),
+            'cuentas' => collect([]),
+            'impuestos' => $this->impuestosRep->get($clause),
+            'empresa' => $this->empresaObj,
+            'usuario_id' => $usuario_id,
+            'conceptos' => $conceptos,
+            'cuentas_por_pagar' => $this->FacturaCompraCatalogoRepository->cuentaPorPagar($this->empresa_id),
+            'cuenta_por_pagar_id' => $cuenta_por_pagar_id,
+            'centro_contable_id' => !empty($cuenta_por_pagar_model)
+                ? ($cuenta_por_pagar_model->centro_contable_id == null ? '' : $cuenta_por_pagar_model->centro_contable_id)
+                : ''
+        ));
+
+        $this->load->view('formulario');
+        $this->load->view('vue/components/empezar_desde');
+    }
+
+    public function guardar()
+    {
+        try {
+            $GuardarFacturaCompra = new \Flexio\Modulo\FacturasCompras\FormRequest\GuardarFacturaCompra();
+            $factura = $GuardarFacturaCompra->guardar();
+        } catch (\Exception $e) {
+            echo json_encode(Collect([
+                'success' => 'error',
+                'message' => $e->getMessage()
+            ]));
+            exit;
+        }
+
+        echo json_encode(Collect([
+            'success' => is_array($factura) && $factura[0] === 'No Anular' ? 'error' : 'success',
+            'message' => is_array($factura) && $factura[0] === 'No Anular'
+                ? $factura[1]
+                : (new Flexio\Library\Toast())->run('success')
+        ]));
+
+        if (!$this->input->is_ajax_request()) {
+            redirect('facturas_compras/listar');
+        }
+        exit;
+    }
+
+    public function ajax_factura_info()
+    {
+        $uuid = $this->input->post('uuid');
+        $facturaObj = new Buscar(new Factura_orm(), 'uuid_factura');
+        $factura = $facturaObj->findByUuid($uuid);
+        $factura->cliente;
+        $factura->cotizacion;
+        $factura->orden_venta;
+        $lista = $factura->items_factura;
+        foreach ($lista as $l) {
+            $l->impuesto;
+            $l->cuenta;
+            $l->articulo;
+        }
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($factura->toArray()))->_display();
+        exit;
+    }
+
+    private function _item($item)
+    {
+        return array(
+            'id' => (string)$item->id,
+            'nombre' => $item->comp_nombre(),
+            'unidades' => $item->unidades->toArray(),
+            'unidad_id' => (string)$item->unidadBaseModel()->id, //unidad base
+            'impuesto_id' => (string)$item->impuestoCompra->id, //impuesto para compra
+            'cuenta_id' => (string)$item->cuentaGasto->id, //cuenta de gasto,
+            'impuesto' => $item->impuestoCompra->toArray(),
+        );
+    }
+
+    public function ajax_get_items()
+    {
+        $registros = array();
+        $categoriasConItems = Categorias_orm::deEmpresa($this->empresa_id)->conItems();
+
+        foreach ($categoriasConItems->get() as $i => $row) {
+            $itemsDeCategoria = Items_orm::deEmpresa($this->empresa_id)->deCategoria($row->id);
+            $registros[$i]['categoria_id'] = (string)$row->id;
+
+            foreach ($itemsDeCategoria->get() as $j => $rowJ) {
+                $registros[$i]['items'][$j] = $this->_item($rowJ);
+            }
+        }
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($registros))->_display();
+
+        exit;
+    }
+
+    private function _getImpuesto($impuesto_id)
+    {
+        $aux = new stdClass();
+        $aux->id = '';
+        $aux->uuid_impuesto = '';
+        $aux->impuesto = 0;
+
+        return !empty($impuesto_id) ? $this->impuestosRep->find($impuesto_id) : $aux;
+    }
+
+    private function _getEmpezarDesde($registro)
+    {
+        return [
+            'id' => $registro->id,
+            'termino_pago' => !empty($registro->termino_pago) ? $registro->termino_pago : '',
+            'proveedor' => array(
+                'id' => (string)$registro->proveedor->id,
+                'nombre' => $registro->proveedor->nombre,
+                'saldo_pendiente' => $registro->proveedor->saldo_pendiente,
+                'credito_favor' => $registro->proveedor->credito,
+                'retiene_impuesto' => $registro->proveedor->retiene_impuesto,
+            ),
+            'bodega' => array(
+                'id' => isset($registro->bodega->id) ? (string)$registro->bodega->id : '',
+                'nombre' => isset($registro->bodega->id) ? $registro->bodega->nombreCompleto() : '',
+
+            ),
+            'comprador' => array(
+                'id' => (isset($registro->comprador->id)) ? (string)$registro->comprador->id : '',
+            ),
+            'referencia' => !empty($registro->referencia) ? $registro->referencia : '',
+            'centro_contable' => array(
+                'id' => (string)!is_null($registro->centro_contable) ? $registro->centro_contable->id : -1,
+                'nombre' => !is_null($registro->centro_contable) ? $registro->centro_contable->nombre : 'Varios',
+            ),
+        ];
+    }
+
+    private function _getEmpezarDesdeItems($registro, $tipo)
+    {
+        $aux = [];
+
+        $lista = ($tipo == 'Ordenes_orm') ? $registro->items : [];
+        foreach ($lista as $item) {
+            $impuesto = $this->_getImpuesto($item->pivot->impuesto_id);
+            $subtotal = $item->pivot->cantidad * $item->pivot->precio_unidad;
+            $descuentos = ($subtotal * $item->pivot->descuento) / 100;
+            $subtotal -= $descuentos;
+            $impuestos = ($subtotal * $impuesto->impuesto) / 100;
+
+            $aux[] = array(
+                'categoria_id' => (string)$item->pivot->categoria_id,
+                'item_id' => (string)$item->id,
+                'descripcion' => $item->descripcion,
+                'cantidad' => $item->pivot->cantidad,
+                'unidad_id' => (string)$item->pivot->unidad_id,
+                'precio_unidad' => $item->pivot->precio_unidad,
+                'impuesto_id' => (string)$impuesto->id,
+                'descuento' => $item->pivot->descuento,
+                'cuenta' => (string)$item->pivot->cuenta_id,
+                //totalizadores de la fila
+                'total' => $subtotal, //no se incluyen impuestos en el total de la fila
+                'subtotal' => $subtotal,
+                'descuentos' => $descuentos,
+                'impuestos' => $impuestos,
+            );
+        }
+
+        return $aux;
+    }
+
+    /**
+     * Consultar las ordenes y retornar un array
+     * con todos los items.
+     *
+     * @return array
+     */
+    public function ajax_get_ordenes_items()
+    {
+
+        if (!$this->input->is_ajax_request()) {
+            return false;
+        }
+
+        $ordenes_id = $this->input->post("ordenes_id");
+        $ordenes = $this->ordenesCompraRep->findIn($ordenes_id);
+
+        if (empty($ordenes->toArray())) {
+            return [];
+        }
+        $response = $this->ordenesCompraRep->getOrdenesItemsCheck($ordenes);
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')->set_output(Collect($response))->_display();
+        exit;
+    }
+
+    public function ajax_get_empezar_desde()
+    {
+        $id = $this->input->post('uuid'); //se recibe el id (int:10)
+        $tipo = $this->input->post('tipo');
+
+        if ($tipo == 'Ordenes_orm') {
+            $registro = $this->ordenesCompraRep->find($id);
+        } elseif ($tipo == 'Subcontratos') {
+            $registro = $this->subcontratosRep->findBy($id);
+        }
+
+        $aux = $this->_getEmpezarDesde($registro);
+        $aux['items'] = $this->_getEmpezarDesdeItems($registro, $tipo);
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($aux))->_display();
+
+        exit;
+    }
+
+    public function ajax_get_factura()
+    {
+        $factura_id = $this->input->post('factura_id');
+        $object = FacturaCompra::find($factura_id);
+        $response = [
+            'centro_contable_id' => $object->centro_contable_id,
+            'proveedor_id' => $object->proveedor_id,
+            'fecha_desde' => $object->fecha_desde,
+            'monto' => $object->monto
+        ];
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(collect($response))->_display();
+
+        exit;
+    }
+
+    public function ajax_get_facturas()
+    {
+        if (!$this->input->is_ajax_request()) {
+            return false;
+        }
+
+        $clause = $this->getClause();
+        $tipo = $this->input->post("tipo");
+        $proveedor_id = $this->input->post("proveedor_id");
+        $limit = (!empty($tipo) && preg_match("/relacionordencompra/i", $tipo)) ? 100 : 10;
+        $result = FacturaCompra::deFiltro($clause)->take($limit)->get()->map(function ($factura) use ($tipo, $proveedor_id) {
+
+            if (!empty($tipo) && preg_match("/relacionordencompra/i", $tipo)) {
+                if (!empty($factura->ordenes()->first()) || !empty($factura->operacion_type)) return;
+                if (!empty($proveedor_id)) return ['id' => $factura->id, 'nombre' => $factura->codigo];
+            }
+            return ['id' => $factura->id, 'text' => $factura->nombre_completo];
+
+        })->reject(function ($factura) {
+
+            return is_null($factura);
+
+        })->values();
+
+        $response = !empty($clause['id']) && !is_array($clause['id']) ? $result->first() : $result;
+
+        echo json_encode($response);
+        exit;
+    }
+
+    public function ajax_guardar_relacion_ordencompra()
+    {
+        try {
+            $GuardarFacturaCompra = new \Flexio\Modulo\FacturasCompras\FormRequest\GuardarFacturaCompra();
+            $factura = $GuardarFacturaCompra->guardar_relacion_ordencompra();
+            $mensaje = "success";
+        } catch (\Exception $e) {
+            $factura = null;
+            $mensaje = $e->getMessage();
+            log_message('error', __METHOD__ . " ->" . ", Linea: " . __LINE__ . " --> " . $e->getMessage() . "\r\n");
+        }
+
+        //echo json_encode(Collect(['success' => 'success']));
+        echo json_encode(array(
+            'response' => $factura,
+            'mensaje' => $mensaje
+        ));
+        exit;
+    }
+
+    private function getClause()
+    {
+        $estado = $this->input->post("estado");
+        $clause = array_merge($this->input->post(), $this->input->get(), ['empresa' => $this->empresa_id]);
+        if (empty($estado)) $clause = array_merge($clause, ['estado' => array('14', '15', '16')]);
+
+        if (isset($clause['campo']) && !empty($clause['campo'])) {
+            $clause = array_merge($clause, $clause['campo']);
+        }
+        return $clause;
+    }
+
+    public function ajax_get_states_segment()
+    {
+        $factura_id = $this->input->post('factura_id');
+
+        if (empty($factura_id)) {
+            return false;
+        }
+
+        if (is_array($factura_id)) {
+            $data = ['factura_id' => is_array($factura_id) ? implode(',', $factura_id) : $factura_id];
+            $response = ['html' => $this->load->view('segments/states', $data, true)];
+        } else {
+            $factura_compra = $this->FacturaCompraRepository->find($factura_id);
+            $articulo = new \Flexio\Library\Articulos\FacturaCompraArticulo;
+            $clause = ['empresa_id' => $this->empresa_id, 'facturables' => true, 'transaccionales' => true, 'conItems' => true];
+            $response = [
+                'politicas' => $factura_compra->politica(),
+                "articulos" => $articulo->get($factura_compra->facturas_items, $factura_compra),
+                'categorias' => $this->ItemsCategoriasRepository->getCollectionCategorias($this->ItemsCategoriasRepository->get($clause)),
+                'estados' => array(
+                    0 => ['id' => 13, 'nombre' => 'Por aprobar', 'class' => "btn btn-block btn-outline btn-warning state-btn"],
+                    1 => ['id' => 14, 'nombre' => 'Por pagar', 'class' => "btn btn-block btn-outline btn-warning state-btn"],
+                    2 => ['id' => 20, 'nombre' => 'Suspendida', 'class' => "btn btn-block btn-outline btn-danger state-btn"],
+                    3 => ['id' => 17, 'nombre' => 'Anulada', 'class' => "btn btn-block btn-outline btn-success state-btn"],
+                )
+            ];
+        }
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($response))->_display();
+        exit;
+    }
+
+    public function ajax_aplicar_pagos()
+    {
+        $ids = $this->input->post('ids');
+
+        // dd($ids);
+        if (empty($ids)) {
+            return false;
+        }
+        /* $this->assets->agregar_js(array(
+             'public/assets/js/modules/facturas_compras/vue.pago_aplicado.js',
+         ));*/
+        $factura_ids = array();
+        $count = 0;
+        foreach ($ids as $id) {
+
+            $factura = $this->facturasCompraRep->findByUuid($id);
+
+            //dd($factura->estado_id);
+            //$row->pagable and $this->auth->has_permission('acceso', 'pagos/crear')
+            if (!in_array($factura->estado_id, [14, 15])) {
+                $response = [
+                    'response' => false,
+                    'mensaje' => 'Las facturas seleccionadas deben estar en estados Por pagar o Pagada parcial.'
+                ];
+                $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+                    ->set_output(json_encode($response))->_display();
+                exit;
+            }
+            $factura_ids[$count] = $factura->id;
+            $count++;
+        }
+        $clause = ['empresa_id' => $this->empresa_id, 'transaccionales' => true, 'conItems' => true, 'modulo' => 'pagos', 'por_pagar' => true];
+        $catalogos = $this->CatalogoRepository->get($clause);
+
+        $data = [
+            'factura_ids' => $ids,
+            'cuentas' => $this->CuentasRepository->get($clause),
+            'metodos_pago' => $catalogos->filter(function ($metodo_pago) {
+                return $metodo_pago->tipo == 'metodo_pago' && $metodo_pago->etiqueta != 'cheque';
+            }),
+            'bancos' => $this->BancosRepository->get(),
+            'tipos_pago' => $catalogos->filter(function ($tipo_pago) {
+                return $tipo_pago->tipo == 'tipo_pago';
+            })
+        ];
+        $response = [
+            'html' => $this->load->view('segments/aplicar_pagos', $data, true),
+            'ids' => $factura_ids
+        ];
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($response))->_display();
+        exit;
+    }
+
+    public function ajax_update_state()
+    {
+        $aux = explode(",", $this->input->post('id'));
+        $errors = "";
+        if (count($aux) == 1 && is_numeric($aux[0])) {
+            try {
+                $GuardarFacturaCompra = new \Flexio\Modulo\FacturasCompras\FormRequest\GuardarFacturaCompra();
+                $facturas = $GuardarFacturaCompra->guardar();
+            } catch (\Exception $e) {
+                $errors .= $e->getMessage() . "<br>";
+            }
+        } else if (count($aux) > 1) {
+            $facturas = array(0 => '', 1 => '');
+            foreach ($aux as $uuid_factura) {
+                try {
+                    $factura = \Flexio\Modulo\FacturasCompras\Models\FacturaCompra::where('uuid_factura', hex2bin($uuid_factura))->first();
+                    $GuardarFacturaCompra = new \Flexio\Modulo\FacturasCompras\FormRequest\GuardarFacturaCompra();
+                    $fac = $GuardarFacturaCompra->guardar(['desde_modal' => 1, 'estado_id' => $this->input->post('estado_id'), 'id' => $factura->id]);
+                    if (is_array($fac) && $fac[0] == 'No Anular') {
+                        $facturas[0] = $fac[0];
+                        $facturas[1] .= $fac[1] . "<br>";
+                    }
+                } catch (\Exception $e) {
+                    $errors .= $e->getMessage() . "<br>";
+                }
+            }
+        }
+
+        echo json_encode(array(
+            'response' => strlen($errors) ? false : (is_array($facturas) && $facturas[0] == 'No Anular' ? false : true),
+            'mensaje' => strlen($errors) ? $errors : (is_array($facturas) && $facturas[0] == 'No Anular' ? $facturas[1] : 'Se actualiz&oacute; el estado correctamente.'),
+            'aplicar_credito' => (count($aux) == 1 && is_numeric($aux[0]) && isset($facturas) && !is_array($facturas) && $facturas->show_anticipo_modal) ? $facturas->uuid_factura : ''
+        ));
+        exit;
+    }
+
+    public function ajax_get_factura_balance()
+    {
+        $factura_id = $this->input->post('factura_id');
+        $registro = \Flexio\Modulo\FacturasCompras\Models\FacturaCompra::find($factura_id);
+
+        $response = !is_null($registro) ? ['saldo' => $registro->saldo] : ['saldo' => 0];
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($response))->_display();
+
+        exit;
+    }
+
+    public function ajax_getFacturadoCompleto()
+    {
+        $clause = ['empresa_id' => $this->empresa_id];
+        $factura = $this->facturasCompraRep->cobradoCompletoSinNotaDebito($clause);
+        $factura->load('proveedor', 'facturas_compras_items.inventario_item', 'facturas_compras_items.impuesto');
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(json_encode($factura->toArray()))->_display();
+        exit();
+    }
+
+    public function ajax_get_credito_aplicable_factura()
+    {
+        $clause = ['empresa' => $this->empresa_id, 'uuid' => $this->input->post('factura_compra_uuid')];
+        $result = \Flexio\Modulo\FacturasCompras\Models\FacturaCompra::where(function ($q) use ($clause) {
+            $q->deFiltro($clause);
+        })->first();
+        $response = !is_null($result) ? ['id' => $result->id, 'credito_favor' => $result->credito_favor] : [];
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(Collect($response))->_display();
+        exit();
+    }
+
+    public function ajax_get_nota_credito_aplicable_factura()
+    {
+        $clause = ['empresa' => $this->empresa_id, 'uuid' => $this->input->post('factura_compra_uuid')];
+        $result = \Flexio\Modulo\FacturasCompras\Models\FacturaCompra::where(function ($q) use ($clause) {
+            $q->deFiltro($clause);
+        })->first();
+        $response = !is_null($result) ? $result->collection()->nota_credito_aplicable_factura : [];
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output(Collect($response))->_display();
+        exit();
+    }
+
+    public function ajax_get_puede_factura_arancelaria()
+    {
+        $error = '';
+
+        try {
+            $factura = FacturaCompra::find($this->input->post('factura_id'));
+            (new FacturaEstaRecibidaValidation($factura))->validate();
+            (new FacturaTieneArancelImportacionValidation($factura))->validate();
+        } catch (\Exception $e) {
+            $error .= $e->getMessage();
+        }
+
+        $response = collect([
+            'code' => strlen($error) ? 401 : 201,
+            'message' => strlen($error) ? $error : '',
+            'uuid_factura' => isset($factura) ? $factura->uuid_factura : null
+        ]);
+
+        $this->output->set_status_header($response['code'])->set_content_type('application/json', 'utf-8')
+            ->set_output($response)->_display();
+        exit();
+    }
+
+    public function ajax_calculo_total()
+    {
+        $error = '';
+        $flete = 0;
+        $seguro = 0;
+
+        foreach ($this->input->post('facturas_compras') as $factura) {
+
+            if ($factura['tipo_gasto'] === 'flete')
+                $flete += $factura['monto'];
+
+            if ($factura['tipo_gasto'] === 'seguro')
+                $seguro += $factura['monto'];
+
+        }
+
+        echo json_encode(
+            collect([
+                'totalFlete' => $flete,
+                'totalSeguro' => $seguro,
+            ])
+        );
+        exit;
+    }
+
+    public function ajax_proveedores_tienen_concepto()
+    {
+        $error = '';
+
+        try {
+            collect($this->input->post('facturas_compras'))->each(function (array $factura) {
+                if (!empty($factura['proveedor_id'])) {
+                    $proveedor = Proveedores::find($factura['proveedor_id']);
+
+                    if (empty($proveedor->concepto))
+                        throw new \Exception("El proveedor {$proveedor->nombre} no tiene un concepto definido.");
+                }
+            });
+        } catch (\Exception $e) {
+            $error .= $e->getMessage();
+        }
+
+        $response = collect([
+            'code' => strlen($error) ? 401 : 201,
+            'message' => strlen($error) ? $error : '',
+        ]);
+
+        $this->output->set_status_header($response['code'])->set_content_type('application/json', 'utf-8')
+            ->set_output($response)->_display();
+        exit();
+    }
+
+    public function ajax_get_default_values_arancel($uuid_factura)
+    {
+        $error = '';
+        $clause = $this->getClause();
+
+        try {
+            $factura = FacturaCompra::where('uuid_factura', hex2bin($uuid_factura))->first();
+            $result = (new FacturaArancelDefaultGetter($factura, $clause))->get();
+        } catch (\Exception $e) {
+            $error .= $e->getMessage();
+        }
+
+        $response = collect([
+            'code' => strlen($error) ? 401 : 201,
+            'message' => strlen($error) ? $error : '',
+            'factura' => isset($result) ? $result : null
+        ]);
+
+        $this->output->set_status_header($response['code'])->set_content_type('application/json', 'utf-8')
+            ->set_output($response)->_display();
+        exit();
+    }
+
+    public function ajax_aplicar_credito()
+    {
+        try {
+            $GuardarCreditoAplicado = new \Flexio\Modulo\FacturasCompras\FormRequest\GuardarCreditoAplicado();
+            $GuardarCreditoAplicado->guardar();
+        } catch (\Exception $e) {
+            echo json_encode(array(
+                'response' => false,
+                'mensaje' => $e->getMessage(),
+            ));
+            exit;
+        }
+
+        echo json_encode(array(
+            'response' => true,
+            'mensaje' => 'Se aplic&oacute; el cr&eacute;dito correctamente.',
+        ));
+        exit;
+    }
+
+    public function ajax_aplicar_nota_credito()
+    {
+        $error = '';
+
+        try {
+            (new GuardarNotaCreditoAplicado())->guardar();
+        } catch (\Exception $e) {
+            $error .= $e->getMessage();
+        }
+
+        echo json_encode([
+            'response' => strlen($error) ? false : true,
+            'mensaje' => strlen($error) ? $error : 'Se aplic&oacute; la nota de cr&eacute;dito correctamente.',
+        ]);
+        exit;
+    }
+
+    private function _Css()
+    {
+        $this->assets->agregar_css(array(
+            'public/assets/css/default/ui/base/jquery-ui.css',
+            'public/assets/css/default/ui/base/jquery-ui.theme.css',
+            'public/assets/css/plugins/jquery/jqgrid/ui.jqgrid.bootstrap.css',
+            'public/assets/css/plugins/jquery/jqgrid/ui.jqgrid.css',
+            'public/assets/css/plugins/jquery/jstree/default/style.min.css',
+            'public/assets/css/plugins/bootstrap/bootstrap-datetimepicker.css',
+            'public/assets/css/plugins/bootstrap/daterangepicker-bs3.css',
+            'public/assets/css/plugins/jquery/chosen/chosen.min.css',
+            'public/assets/css/plugins/jquery/jquery.webui-popover.css',
+            'public/assets/js/plugins/jquery/sweetalert/sweetalert.css',
+            'public/assets/css/modules/stylesheets/facturas_compras.css',
+            'public/assets/css/plugins/jquery/jquery.fileupload.css',
+            'public/assets/css/plugins/bootstrap/select2-bootstrap.min.css',
+            'public/assets/css/plugins/bootstrap/select2.min.css',
+        ));
+    }
+
+    private function _js()
+    {
+        $this->assets->agregar_js(array(
+            'public/assets/js/plugins/jquery/jquery-validation/localization/messages_es.min.js',
+            'public/assets/js/plugins/jquery/jquery-validation/additional-methods.js',
+            'public/assets/js/plugins/jquery/combodate/combodate.js',
+            'public/assets/js/plugins/jquery/combodate/momentjs.js',
+            'public/assets/js/plugins/jquery/chosen.jquery.min.js',
+            'public/assets/js/plugins/jquery/jquery-inputmask/inputmask.js',
+            'public/assets/js/plugins/jquery/jquery-inputmask/jquery.inputmask.js',
+            'public/assets/js/moment-with-locales-290.js',
+            'public/assets/js/plugins/bootstrap/daterangepicker.js',
+            'public/assets/js/plugins/bootstrap/bootstrap-datetimepicker.js',
+            'public/assets/js/plugins/jquery/fileupload/jquery.fileupload.js',
+            'public/assets/js/plugins/bootstrap/select2/select2.min.js',
+            'public/assets/js/plugins/bootstrap/select2/es.js',
+            'public/assets/js/default/vue/directives/datepicker2.js',
+            'public/assets/js/default/vue/directives/inputmask.js',
+            'public/assets/js/default/vue/directives/select2.js',
+            'public/resources/assets/js/plugins/numero.decimal.js',
+            // 'public/assets/js/default/vue/directives/select2ajax.js',
+        ));
+    }
+
+    public function documentos_campos()
+    {
+        return array(
+            array(
+                'type' => 'hidden',
+                'name' => 'factura_compra_id',
+                'id' => 'factura_Compra_id',
+                'class' => 'form-control',
+                'readonly' => 'readonly',
+            ),);
+    }
+
+    public function ajax_guardar_documentos()
+    {
+        if (empty($_POST)) {
+            return false;
+        }
+
+        $factura_id = $this->input->post('factura_id', true);
+        $modeloInstancia = FaccomModel::find($factura_id);
+
+        $this->documentos->subir($modeloInstancia);
+    }
+
+    public function historial($uuid = null)
+    {
+        $this->assets->agregar_var_js([
+            'uuid' => $uuid,
+            'url_historial' => base_url() . 'facturas_compras/ajax_get_historial',
+            "url_catalogo" => base_url() . 'facturas_compras/ajax_get_historial_catalogos',
+        ]);
+        $this->assets->agregar_js([
+            'public/resources/compile/modulos/timeline/index.js'
+        ]);
+
+        $factura = $this->facturasCompraRep->findByUuid($uuid);
+
+        $breadcrumb = array(
+            'titulo' => '<i class="fa fa-shopping-cart"></i> Bit&aacute;cora de Facturas: ' . $factura->codigo,
+        );
+
+        $data = [];
+        $data['codigo'] = $factura->codigo;
+        $this->template->agregar_titulo_header('Facturas de compras');
+        $this->template->agregar_breadcrumb($breadcrumb);
+        $this->template->agregar_contenido($data);
+        $this->template->visualizar();
+    }
+
+    public function ajax_get_historial_catalogos()
+    {
+        $empresa_id = $this->empresa_id;
+        $fcatalogo = \Flexio\Modulo\FacturasVentas\Models\FacturaVentaCatalogo::all();
+
+
+        $catalogos = [
+            'cuenta_por_pagar_id' => CuentaPorPagar::where('empresa_id', $empresa_id)->get()->map(function ($o) {
+                return ['id' => $o->cuenta->id, 'nombre' => $o->cuenta->nombre_completo];
+            }),
+            'centro_contable_id' => CentrosContables::where('empresa_id', $empresa_id)->get(),
+            'bodega_id' => \Flexio\Modulo\Bodegas\Models\Bodegas::where('empresa_id', $empresa_id)->get(),
+            'estado_id' => $fcatalogo->filter(function ($o) {
+                return $o->tipo === 'estado_factura_compra';
+            })->values()->map(function ($o) {
+                return ['id' => $o->key, 'nombre' => $o->valor];
+            })
+        ];
+
+        $this->output->set_status_header(200)
+            ->set_content_type('application/json', 'utf-8')
+            ->set_output(collect($catalogos))->_display();
+        exit;
+    }
+
+    public function ajax_get_historial()
+    {
+        $uuid = $this->input->post('uuid', true);
+        $object = FacturaCompra::where('uuid_factura', hex2bin($uuid))->first();
+        $response = collect([
+            'historial' => $object->historial
+        ]);
+
+        $this->output->set_status_header(200)
+            ->set_content_type('application/json', 'utf-8')
+            ->set_output($response)->_display();
+        exit;
+    }
+
+    public function ajax_transacciones()
+    {
+        if (!$this->input->is_ajax_request()) {
+            return false;
+        }
+        $id = $this->input->post('id');
+        $factura = FacturaCompra::find($id);
+        $sysTransaccion = new \Flexio\Modulo\Transaccion\Models\SysTransaccion;
+        $sys = $sysTransaccion->with('transacciones')->where(function ($query) use ($id) {
+            $query->where('linkable_id', $id)
+                ->where('linkable_type', 'Flexio\Modulo\FacturasCompras\Models\FacturaCompra');
+        })->get();
+        $fecha = str_replace("-", "/", $factura->created_at);
+        $detalle = new \Flexio\Modulo\Transaccion\Data\DetalleTransaccion($sys, $fecha);
+        $response = $detalle->getData();
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output($response)->_display();
+        exit;
+    }
+
+    public function ajax_validate_inventariado()
+    {
+        // id de la factura
+        //filtar los items tipo inventariado
+        // que no sea de orden de compra
+        if (!$this->input->is_ajax_request()) {
+            return false;
+        }
+
+        $response = [];
+
+        $id = $this->input->post('id');
+
+        $factura = FacturaCompra::find($id);
+
+        if(is_null($factura)){
+
+            $response = collect(['respuesta' => 'no']);
+            $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+                ->set_output($response);
+            exit;
+        }
+        $lines_items = $factura->facturas_items;
+
+
+        $items = $lines_items->filter(function ($lines, $index) {
+            return in_array($lines->item->tipo_id, [4, 5, 8]);
+        })->values();
+
+
+        $html = "<p>La factura contiene los siguientes ítems de inventario:</p>";
+
+        if (!$factura->isOrdenCompra() && $items->isNotEmpty()) {
+            foreach ($items as $line) {
+                $html .= "<p><strong>{$line->item->codigo} - {$line->item->nombre}</strong></p>";
+            }
+            $html .= "<p>Estos ítems no serán sumados a las existencias de inventario. En caso de requerir que sumen a las existencias de inventario, deberá colocar una orden de compra y posteriormente relacionar esta factura a la orden de compra creada.</p>
+            <p>
+            ¿Desea proceder con el registro de la factura a pesar de que no se creará una entrada de inventario paralos ítems de inventario arriba indicados?</p>";
+
+            $response = collect(['respuesta' => 'si', 'html' => $html]);
+        } else {
+            $response = collect(['respuesta' => 'no']);
+        }
+
+        $this->output->set_status_header(200)->set_content_type('application/json', 'utf-8')
+            ->set_output($response);
+    }
+
+}
